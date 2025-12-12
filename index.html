@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Reusable Box Tracker</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root{
+      --primary: #354ba0;
+      --bg: #f7f8fb;
+      --card: #fff;
+      --muted:#6b7280;
+      font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    }
+    body{ margin:0; background:var(--bg); color:#111; }
+    .topbar{ display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:linear-gradient(0deg, rgba(53,75,160,0.04), rgba(53,75,160,0.04)); border-bottom:1px solid rgba(0,0,0,0.04)}
+    .brand { display:flex; gap:12px; align-items:center; }
+    .brand img{ height:36px; }
+    .topnav { display:flex; gap:10px; align-items:center; }
+    .btn { background:var(--primary); color:#fff; border:none; padding:8px 14px; border-radius:999px; cursor:pointer; font-weight:600 }
+    .btn.secondary{ background:#fff; color:var(--primary); border:1px solid rgba(53,75,160,0.12) }
+    .container{ max-width:1000px; margin:22px auto; padding:16px; }
+    .card{ background:var(--card); border-radius:14px; padding:18px; box-shadow:0 6px 20px rgba(15,15,15,0.04); }
+    h2{ margin:0 0 8px 0; font-weight:700 }
+    .modes { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:14px 0; }
+    .mode { padding:16px; border-radius:12px; border:1px solid rgba(0,0,0,0.06); background:#fff; text-align:center; cursor:pointer }
+    .mode.selected{ border-color:var(--primary); box-shadow:0 6px 20px rgba(53,75,160,0.06); background:linear-gradient(0deg, rgba(53,75,160,0.03), rgba(53,75,160,0.02)) }
+    .small{ color:var(--muted); font-size:13px }
+    #statusBar{ display:flex; justify-content:space-between; align-items:center; padding:10px; margin-top:12px; border-radius:10px; background:#fbfcff; border:1px solid rgba(0,0,0,0.03) }
+    video{ width:100%; border-radius:10px; background:#000; }
+    .controls{ display:flex; gap:8px; margin-top:10px }
+    .input { padding:10px; border-radius:8px; border:1px solid #e6e9f0; width:100% }
+    table{ width:100%; border-collapse:collapse; font-size:14px; margin-top:12px }
+    th,td{ padding:8px; border-bottom:1px solid #f0f2f7; text-align:left }
+    .badge { background:var(--primary); color:#fff; padding:6px 8px; border-radius:999px; font-weight:600 }
+    .admin-panel{ margin-top:16px; display:flex; gap:10px; align-items:center; justify-content:space-between }
+    .user-chip{ padding:6px 10px; border-radius:999px; background:#eef2ff; color:var(--primary); font-weight:600 }
+    .muted{ color:var(--muted) }
+    .footer { margin-top:18px; text-align:center; color:var(--muted); font-size:13px }
+    @media (max-width:720px){ .modes{ grid-template-columns:repeat(1,1fr) } .topnav{ display:none } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="static/img/cc-logo-mark.png" alt="logo" />
+      <div>
+        <div style="font-weight:700">Reusable Box Tracker</div>
+        <div style="font-size:12px;color:var(--muted)">Scan • Track • Export</div>
+      </div>
+    </div>
+    <div class="topnav">
+      <span id="userEmail" class="muted"></span>
+      <button id="btnLogin" class="btn">Sign in (M365)</button>
+      <button id="btnLogout" class="btn secondary" style="display:none">Logout</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <h2>Scan Boxes</h2>
+          <div class="small">Choose a mode and start scanning. Manual code entry available if camera misreads.</div>
+        </div>
+        <div id="roleArea"></div>
+      </div>
+
+      <div class="modes" style="margin-top:12px">
+        <div id="modeIN" class="mode"><div style="font-size:20px">📥</div><div style="font-weight:700">IN</div><div class="small">Empty boxes returned</div></div>
+        <div id="modeOUT" class="mode"><div style="font-size:20px">📤</div><div style="font-weight:700">OUT</div><div class="small">Send full boxes (enter invoice)</div></div>
+        <div id="modeDIS" class="mode"><div style="font-size:20px">🗑️</div><div style="font-weight:700">DISCARD</div><div class="small">Mark end-of-life</div></div>
+      </div>
+
+      <div id="statusBar" style="display:none">
+        <div id="activeMode">Mode —</div>
+        <div id="scanCount" class="badge">Scanned (0)</div>
+      </div>
+
+      <div id="flowPanel" style="margin-top:12px"></div>
+    </section>
+
+    <section id="adminCard" class="card" style="margin-top:14px; display:none">
+      <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div style="min-width:250px">
+          <h3 style="margin:0">Admin</h3>
+          <div class="small">User management, exports</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button id="btnExportCSV" class="btn">Export Movements CSV</button>
+          <button id="btnReloadTables" class="btn secondary">Reload Workbook</button>
+        </div>
+      </div>
+
+      <div id="adminArea" style="margin-top:12px"></div>
+    </section>
+
+    <div class="footer">Built to replace messy spreadsheets. Scans are written directly to your shared Excel workbook.</div>
+  </main>
+
+  <!-- libs -->
+  <script src="https://alcdn.msauth.net/browser/2.10.2/js/msal-browser.min.js"></script>
+  <script src="https://unpkg.com/@zxing/library@latest"></script>
+
+  <script>
+/* ========== CONFIG - REPLACE THESE ========== */
+const CLIENT_ID = "dd2a4380-419c-4af5-9b68-89e3cb7702d3";         // Azure App Client ID
+const TENANT_ID = "29a4981e-7d4a-4d6a-b1f7-fd47d3fdc476";         // Azure Tenant ID
+// Path to your workbook on OneDrive (if in root): /me/drive/root:/ReusableBoxTracker.xlsx:
+// if in a folder: /me/drive/root:/yourfolder/ReusableBoxTracker.xlsx:
+const WORKBOOK_PATH = "/me/drive/root:/CCIL ERP/Sales-Dispatch Tracker/ReusableBoxTracker.xlsx:";
+/* ============================================ */
+
+const MSAL_CONFIG = {
+  auth: {
+    clientId: CLIENT_ID,
+    authority: `https://login.microsoftonline.com/${TENANT_ID}`,
+    redirectUri: window.location.origin
+  },
+  cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false }
+};
+const msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
+const GRAPH_SCOPES = ["openid","profile","User.Read","Files.ReadWrite.All","Sites.ReadWrite.All","offline_access"];
+
+let account = null;
+let userEmail = "";
+let isAdmin = false;
+
+// UI refs
+const btnLogin = document.getElementById("btnLogin");
+const btnLogout = document.getElementById("btnLogout");
+const userEmailEl = document.getElementById("userEmail");
+const roleArea = document.getElementById("roleArea");
+const adminCard = document.getElementById("adminCard");
+const adminArea = document.getElementById("adminArea");
+const btnExportCSV = document.getElementById("btnExportCSV");
+const btnReloadTables = document.getElementById("btnReloadTables");
+
+// app state
+let appState = { mode:null, invoice:"", scanned:[], codeReader:null, streamActive:false, workbookMeta:null, tablesMeta:null };
+
+/* ---------- Helpers ---------- */
+function norm(s){ return (s||"").toString().trim().toUpperCase(); }
+async function getToken(){
+  const active = msalInstance.getAllAccounts()[0];
+  if(!active) throw new Error("not-signed-in");
+  try {
+    const silent = await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: active });
+    return silent.accessToken;
+  } catch(e){
+    const result = await msalInstance.acquireTokenPopup({ scopes: GRAPH_SCOPES });
+    return result.accessToken;
+  }
+}
+async function graphFetch(path, method="GET", body=null) {
+  const token = await getToken();
+  const res = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
+    method, headers: { Authorization: `Bearer ${token}`, "Content-Type":"application/json" },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if(!res.ok){
+    const t = await res.text();
+    throw new Error(`Graph ${res.status}: ${t}`);
+  }
+  return res.json();
+}
+
+/* ---------- Workbook helpers ----------
+ We'll use path-based endpoints:
+  - GET workbook: /me/drive/root:/ReusableBoxTracker.xlsx:/workbook/worksheets
+  - Read table rows: /me/drive/root:/ReusableBoxTracker.xlsx:/workbook/tables/{tableName}/rows
+  - Add row: POST /me/drive/root:/ReusableBoxTracker.xlsx:/workbook/tables/{tableName}/rows/add
+  - Update row: PATCH /me/drive/root:/ReusableBoxTracker.xlsx:/workbook/tables/{tableName}/rows/{index}
+Note: tableName is the name you set in Excel (Movements, Boxes, Users)
+-------------------------------------------*/
+async function loadWorkbookMeta(){
+  // get workbook info and available tables
+  const path = `${WORKBOOK_PATH}/workbook/worksheets`;
+  // we will query table rows directly when needed; but check file exists
+  const info = await graphFetch(`${WORKBOOK_PATH}`);
+  appState.workbookMeta = info;
+  return info;
+}
+
+async function readTableRows(tableName){
+  // returns array of rows as arrays of values; header info also returned via /tables/{name}
+  // easier to use the newer endpoint to get table rows as 'values'
+  const r = await graphFetch(`${WORKBOOK_PATH}/workbook/tables('${encodeURIComponent(tableName)}')/rows`);
+  // r.value is list of row objects; each: { index, values: [[col1, col2, ...]] }
+  return r.value || [];
+}
+async function addTableRow(tableName, valuesArray){
+  // Graph expects body: { "values": [ [c1, c2, ...] ] }
+  const body = { values: [ valuesArray ] };
+  const res = await graphFetch(`${WORKBOOK_PATH}/workbook/tables('${encodeURIComponent(tableName)}')/rows/add`, "POST", body);
+  return res;
+}
+async function updateTableRow(tableName, rowIndex, valuesArray){
+  const body = { values: [ valuesArray ] };
+  // note: rowIndex is 0-based in Graph for rows
+  const res = await graphFetch(`${WORKBOOK_PATH}/workbook/tables('${encodeURIComponent(tableName)}')/rows/${rowIndex}`, "PATCH", body);
+  return res;
+}
+
+/* ---------- auth & init ---------- */
+async function checkLogin(){
+  const accounts = msalInstance.getAllAccounts();
+  if(accounts.length===0){
+    userEmailEl.textContent = "";
+    btnLogin.style.display = "inline-block";
+    btnLogout.style.display = "none";
+    return;
+  }
+  account = accounts[0];
+  userEmail = account.username || account.email || account.homeAccountId;
+  userEmailEl.textContent = userEmail;
+  btnLogin.style.display = "none";
+  btnLogout.style.display = "inline-block";
+  // load workbook meta and check admin
+  await loadWorkbookMeta().catch(e=>console.error("wb",e));
+  await loadUsersAndDecideAdmin();
+}
+btnLogin.onclick = async()=> {
+  try{
+    await msalInstance.loginPopup({ scopes: GRAPH_SCOPES });
+    await checkLogin();
+    initUI();
+  }catch(e){ alert("Login failed: "+e.message) }
+};
+btnLogout.onclick = async()=>{ msalInstance.logoutPopup(); location.reload(); };
+
+/* ---------- users table / admin check ---------- */
+async function loadUsersAndDecideAdmin(){
+  try{
+    const rows = await readTableRows("Users");
+    // assume first row is header; Graph rows have .values array
+    // convert to list of objects
+    const map = rows.map(r => r.values[0]); // each values is [[col1,col2,..]]
+    const users = map.map(arr => ({ email: arr[0], role: (arr[1]||"").toLowerCase() }));
+    const me = users.find(u => norm(u.email) === norm(userEmail));
+    isAdmin = !!(me && me.role === "admin");
+    roleArea.innerHTML = `<div class="user-chip">${isAdmin ? "Admin" : "User"}</div>`;
+    if(isAdmin) adminCard.style.display = "block"; else adminCard.style.display = "none";
+  }catch(e){
+    console.warn("Cannot read Users table:", e);
+    // assume non-admin if cannot read
+    isAdmin = false; adminCard.style.display = "none";
+  }
+}
+
+/* ---------- UI rendering & scanning ---------- */
+function initUI(){
+  // mode selectors
+  document.getElementById("modeIN").onclick = ()=> selectMode("IN");
+  document.getElementById("modeOUT").onclick = ()=> selectMode("OUT");
+  document.getElementById("modeDIS").onclick = ()=> selectMode("DISCARD");
+  // admin buttons
+  btnExportCSV.onclick = exportMovementsCSV;
+  btnReloadTables.onclick = async ()=> { await loadWorkbookMeta(); alert("Reloaded workbook info"); };
+  // if already logged in, set UI
+  checkLogin();
+}
+
+function selectMode(m){
+  appState.mode = m;
+  appState.scanned = [];
+  appState.invoice = "";
+  document.getElementById("statusBar").style.display = "flex";
+  document.getElementById("activeMode").textContent = `Mode: ${m}`;
+  document.getElementById("scanCount").textContent = `Scanned (0)`;
+  // highlight
+  document.querySelectorAll('.mode').forEach(el=>el.classList.remove('selected'));
+  if(m==="IN") document.getElementById("modeIN").classList.add('selected');
+  if(m==="OUT") document.getElementById("modeOUT").classList.add('selected');
+  if(m==="DISCARD") document.getElementById("modeDIS").classList.add('selected');
+  renderScannerArea();
+}
+
+function renderScannerArea(){
+  const panel = document.getElementById("flowPanel");
+  panel.innerHTML = "";
+  // invoice input for OUT
+  if(appState.mode==="OUT"){
+    const inv = document.createElement("div");
+    inv.innerHTML = `<input id="invoiceInput" class="input" placeholder="Enter invoice number" />`;
+    panel.appendChild(inv);
+  }
+  // video
+  const vwrap = document.createElement("div");
+  vwrap.innerHTML = `<video id="video" autoplay muted playsinline></video>`;
+  panel.appendChild(vwrap);
+
+  // manual entry details
+  const manual = document.createElement("details");
+  manual.innerHTML = `<summary style="cursor:pointer">Manual entry</summary>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <input id="manualCode" class="input" placeholder="Type barcode here" />
+      <button id="addManual" class="btn secondary">Add</button>
+    </div>`;
+  panel.appendChild(manual);
+
+  // controls
+  const ctr = document.createElement("div"); ctr.className="controls";
+  ctr.innerHTML = `<button id="btnDone" class="btn">DONE</button>
+                   <button id="btnRemove" class="btn secondary">Remove last</button>
+                   <button id="btnReset" class="btn secondary">Reset</button>`;
+  panel.appendChild(ctr);
+
+  // scanned list + result area
+  const list = document.createElement("div"); list.id="scannedList"; list.style.marginTop="10px";
+  panel.appendChild(list);
+  const result = document.createElement("div"); result.id="resultLog"; panel.appendChild(result);
+
+  // wire manual
+  document.getElementById("addManual").onclick = ()=>{
+    const v = document.getElementById("manualCode").value.trim();
+    if(!v) return;
+    if(!appState.scanned.includes(v)) appState.scanned.push(v);
+    document.getElementById("manualCode").value="";
+    updateScannedUI();
+  };
+  document.getElementById("btnRemove").onclick = ()=> { appState.scanned.pop(); updateScannedUI(); };
+  document.getElementById("btnReset").onclick = ()=> { appState.scanned=[]; updateScannedUI(); };
+
+  document.getElementById("btnDone").onclick = async ()=>{
+    // gather invoice if needed
+    if(appState.mode==="OUT"){
+      const val = document.getElementById("invoiceInput").value.trim();
+      if(!val){ alert("Invoice required"); return; }
+      appState.invoice = val;
+    }
+    if(appState.scanned.length===0){ alert("No codes scanned"); return; }
+    // perform validation + write to excel
+    await handleBatchSubmit();
+  };
+
+  // start scanner
+  startScanner();
+  updateScannedUI();
+}
+
+function updateScannedUI(){
+  document.getElementById("scannedList").textContent = "Scanned: "+appState.scanned.join(", ");
+  document.getElementById("scanCount").textContent = `Scanned (${appState.scanned.length})`;
+}
+
+/* ---------- ZXing scanner ---------- */
+function startScanner(){
+  stopScanner();
+  const codeReader = new ZXing.BrowserMultiFormatReader();
+  appState.codeReader = codeReader;
+  codeReader.listVideoInputDevices().then(devices=>{
+    const back = devices.find(d=>/back|rear/i.test(d.label)) || devices[0];
+    return codeReader.decodeFromVideoDevice(back.deviceId, "video", (result, err) => {
+      if(result && result.getText){
+        const code = result.getText().trim();
+        if(!appState.scanned.includes(code)) { appState.scanned.push(code); updateScannedUI(); }
+      }
+    });
+  }).catch(e=>{ console.warn("camera err",e); /* camera may be unavailable on desktop */ });
+}
+function stopScanner(){
+  try{
+    if(appState.codeReader) { appState.codeReader.reset(); appState.codeReader=null; }
+  }catch(e){}
+}
+
+/* ---------- Business rules + Excel writes ---------- */
+
+async function handleBatchSubmit(){
+  // read current Boxes and Movements
+  try{
+    const boxesRows = await readTableRows("Boxes");
+    const boxes = boxesRows.map(r=>r.values[0]).map(arr=>({
+      barcode: arr[0],
+      barcode_norm: norm(arr[1]||arr[0]),
+      status: arr[2],
+      times_used: Number(arr[3]||0),
+      last_invoice: arr[4],
+      last_invoice_norm: norm(arr[5]||arr[4]),
+      last_moved_at: arr[6]
+    }));
+    const movementsRows = await readTableRows("Movements");
+    const movements = movementsRows.map(r=>r.values[0]).map(arr=>({
+      timestamp: arr[0], event_type:arr[1], user_email:arr[2], barcode:arr[3], barcode_norm: norm(arr[4]), invoice:arr[5], invoice_norm: norm(arr[6]), message:arr[7]
+    }));
+
+    // rule: invoice reuse blocked
+    if(appState.mode==="OUT"){
+      const invnorm = norm(appState.invoice);
+      const used = movements.find(m => m.event_type==="OUT" && m.invoice_norm===invnorm);
+      if(used && !isAdmin){
+        alert("Invoice has already been used. Admin can override.");
+        return;
+      }
+    }
+
+    // process each barcode, produce per-barcode result logs and update Boxes table as needed
+    const logs = [];
+    const seen = new Set();
+    for(const raw of appState.scanned){
+      const barcode_norm = norm(raw);
+      if(seen.has(barcode_norm)){ logs.push({barcode:raw, ok:false, message:"Duplicate in same batch"}); continue; }
+      seen.add(barcode_norm);
+
+      // find box
+      const box = boxes.find(b=>b.barcode_norm===barcode_norm);
+      if(appState.mode==="OUT"){
+        // cannot OUT if already with customer
+        if(box && box.status==="customer" && !isAdmin){ logs.push({barcode:raw, ok:false, message:"Already with customer; IN required"}); continue; }
+        if(box && box.status==="discarded" && !isAdmin){ logs.push({barcode:raw, ok:false, message:"Box discarded; cannot reuse"}); continue; }
+        // ok to OUT: update Boxes table (increment times_used), set status customer, last_invoice
+        if(box){
+          box.times_used = (box.times_used||0)+1;
+          box.status = "customer";
+          box.last_invoice = appState.invoice;
+          box.last_invoice_norm = norm(appState.invoice);
+          box.last_moved_at = (new Date()).toISOString();
+          // update row: need index; boxesRows contains index values
+          const rowIndex = boxesRows.find(r=>norm(r.values[0][1]||r.values[0][0])===barcode_norm).index;
+          // request patch
+          const values = [ box.barcode, box.barcode_norm, box.status, box.times_used, box.last_invoice, box.last_invoice_norm, box.last_moved_at ];
+          await updateTableRow("Boxes", rowIndex, values);
+        } else {
+          // create new row
+          const now = (new Date()).toISOString();
+          await addTableRow("Boxes", [ raw, barcode_norm, "customer", 1, appState.invoice, norm(appState.invoice), now ]);
+        }
+        // append movement row
+        await addTableRow("Movements", [ (new Date()).toISOString(), "OUT", userEmail, raw, barcode_norm, appState.invoice, norm(appState.invoice), "Sent OUT" ]);
+        logs.push({barcode:raw, ok:true, message:"Sent OUT"});
+      } // END OUT
+
+      else if(appState.mode==="IN"){
+        if(!box && !isAdmin){ logs.push({barcode:raw, ok:false, message:"Box not found"}); continue; }
+        if(box && box.status!=="customer" && !isAdmin){ logs.push({barcode:raw, ok:false, message:`Invalid state ${box.status}`}); continue; }
+        if(box){
+          box.status="factory";
+          box.last_moved_at=(new Date()).toISOString();
+          const rowIndex = boxesRows.find(r=>norm(r.values[0][1]||r.values[0][0])===barcode_norm).index;
+          const values = [ box.barcode, box.barcode_norm, box.status, box.times_used, box.last_invoice, box.last_invoice_norm, box.last_moved_at ];
+          await updateTableRow("Boxes", rowIndex, values);
+        } else {
+          await addTableRow("Boxes", [ raw, barcode_norm, "factory", 0, "", "", (new Date()).toISOString() ]);
+        }
+        await addTableRow("Movements", [ (new Date()).toISOString(), "IN", userEmail, raw, barcode_norm, "", "", "Moved IN" ]);
+        logs.push({barcode:raw, ok:true, message:"Moved IN"});
+      }
+
+      else if(appState.mode==="DISCARD"){
+        if(!box && !isAdmin){ logs.push({barcode:raw, ok:false, message:"Box not found"}); continue; }
+        if(box && box.status!=="factory" && !isAdmin){ logs.push({barcode:raw, ok:false, message:`Invalid state ${box.status} — can only discard in factory`}); continue; }
+        if(box){
+          box.status="discarded";
+          box.last_moved_at=(new Date()).toISOString();
+          const rowIndex = boxesRows.find(r=>norm(r.values[0][1]||r.values[0][0])===barcode_norm).index;
+          const values = [ box.barcode, box.barcode_norm, box.status, box.times_used, box.last_invoice, box.last_invoice_norm, box.last_moved_at ];
+          await updateTableRow("Boxes", rowIndex, values);
+        } else {
+          await addTableRow("Boxes", [ raw, barcode_norm, "discarded", 0, "", "", (new Date()).toISOString() ]);
+        }
+        await addTableRow("Movements", [ (new Date()).toISOString(), "DISCARD", userEmail, raw, barcode_norm, "", "", "Discarded" ]);
+        logs.push({barcode:raw, ok:true, message:"Discarded"});
+      }
+    } // loop scanned
+
+    renderResultLogs(logs);
+    // clear scanned only if there were successes
+    if(logs.some(l=>l.ok)) { appState.scanned=[]; updateScannedUI(); }
+  }catch(e){
+    alert("Error processing batch: "+e.message);
+    console.error(e);
+  }
+}
+
+function renderResultLogs(logs){
+  const el = document.getElementById("resultLog");
+  el.innerHTML = `<div style="margin-top:8px"><strong>Batch results</strong></div>`;
+  const tbl = document.createElement("table");
+  tbl.innerHTML = `<thead><tr><th>Barcode</th><th>OK</th><th>Message</th></tr></thead><tbody></tbody>`;
+  for(const r of logs){
+    const row = document.createElement("tr");
+    row.innerHTML = `<td>${r.barcode}</td><td>${r.ok? "✔️":"❌"}</td><td>${r.message}</td>`;
+    tbl.querySelector("tbody").appendChild(row);
+  }
+  el.appendChild(tbl);
+}
+
+/* ---------- Admin functions ---------- */
+async function exportMovementsCSV(){
+  try{
+    const rows = await readTableRows("Movements");
+    const values = rows.map(r=>r.values[0]);
+    const csv = [ ["timestamp","event_type","user_email","barcode","barcode_norm","invoice","invoice_norm","message"], ...values ].map(r=> r.map(c=> `"${String(c||"").replace(/"/g,'""')}"`).join(",") ).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href=url; a.download="movements.csv"; a.click();
+    URL.revokeObjectURL(url);
+  }catch(e){ alert("Export failed: "+e.message) }
+}
+
+/* ---------- boot ---------- */
+window.addEventListener("load", async ()=>{
+  initUI();
+  // If signed-in through redirect, MSAL will have account; handle that
+  msalInstance.handleRedirectPromise().then(async (resp)=>{
+    if(resp) { await checkLogin(); initUI(); }
+  }).catch(console.error);
+});
+  </script>
+</body>
+</html>
