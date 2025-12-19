@@ -62,7 +62,36 @@
     .user-chip{ padding:6px 10px; border-radius:10px; background:#bfcfff; color:var(--primary); font-weight:600 }
     .muted{ color:var(--muted) }
     .footer { margin-top:18px; text-align:center; color:var(--muted); font-size:13px }
-    @media (max-width:720px){ .modes{ grid-template-columns:repeat(1,1fr) } .topnav{ display:none } }
+    /*@media (max-width:720px){ .modes{ grid-template-columns:repeat(1,1fr) } .topnav{ display:none } }*/
+    @media (max-width:720px){
+    .modes{
+      grid-template-columns: 1fr;
+    }
+
+    .topbar{
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .topnav{
+      display: flex;
+      width: 100%;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    #userEmail{
+      font-size: 13px;
+      word-break: break-all;
+    }
+
+    .btn{
+      padding: 8px 12px;
+      font-size: 14px;
+    }
+  }
   </style>
 </head>
 <body>
