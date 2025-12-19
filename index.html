@@ -638,6 +638,23 @@ async function handleBatchSubmit() {
     const logs = [];
     const seen = new Set();
 
+    function nowISTExcel() {
+    const d = new Date();
+    // Convert UTC → IST
+    const ist = new Date(d.getTime() + (5.5 * 60 * 60 * 1000));
+
+    const yyyy = ist.getFullYear();
+    const mm = String(ist.getMonth() + 1).padStart(2, "0");
+    const dd = String(ist.getDate()).padStart(2, "0");
+    const hh = String(ist.getHours()).padStart(2, "0");
+    const mi = String(ist.getMinutes()).padStart(2, "0");
+    const ss = String(ist.getSeconds()).padStart(2, "0");
+
+    // Excel-friendly datetime
+    return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+  }
+
+
     for (const raw of appState.scanned) {
       const b = norm(raw);
       if (seen.has(b)) {
@@ -667,7 +684,7 @@ async function handleBatchSubmit() {
         }
 
         await addTableRow("Movements", [
-          new Date().toISOString(),
+          nowISTExcel(),
           "OUT",
           userEmail,
           raw,
@@ -711,7 +728,7 @@ async function handleBatchSubmit() {
 
         // ✅ valid IN
         await addTableRow("Movements", [
-          new Date().toISOString(),
+          nowISTExcel(),
           "IN",
           userEmail,
           raw,
@@ -741,7 +758,7 @@ async function handleBatchSubmit() {
           continue;
         }
         await addTableRow("Movements", [
-          new Date().toISOString(),
+          nowISTExcel(),
           "DISCARD",
           userEmail,
           raw,
