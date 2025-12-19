@@ -162,9 +162,9 @@
 /* ========== CONFIG - REPLACE THESE ========== */
 const CLIENT_ID = "dd2a4380-419c-4af5-9b68-89e3cb7702d3";         // Azure App Client ID
 const TENANT_ID = "29a4981e-7d4a-4d6a-b1f7-fd47d3fdc476";         // Azure Tenant ID
-// Path to your workbook on OneDrive (if in root): /me/drive/root:/ReusableBoxTracker.xlsx:
-// if in a folder: /me/drive/root:/yourfolder/ReusableBoxTracker.xlsx:
-const WORKBOOK_PATH = "/me/drive/root:/CCIL ERP/Sales-Dispatch Tracker/ReusableBoxTracker.xlsx:";
+const SITE_ID = "purvflexipack-my.sharepoint.com,e9533691-c60c-4dc1-82fa-3ac4e8dd1c78,e63a381c-26fe-42d5-99b9-888859b9f400"
+const WORKBOOK_PATH = `/sites/${SITE_ID}/drive/root:/CCIL ERP/Sales-Dispatch Tracker/ReusableBoxTracker.xlsx:`;
+// const WORKBOOK_PATH = "/me/drive/root:/CCIL ERP/Sales-Dispatch Tracker/ReusableBoxTracker.xlsx:";
 /* ============================================ */
 
 const MSAL_CONFIG = {
@@ -252,12 +252,6 @@ async function addTableRow(tableName, valuesArray){
   const res = await graphFetch(`${WORKBOOK_PATH}/workbook/tables('${encodeURIComponent(tableName)}')/rows/add`, "POST", body);
   return res;
 }
-// async function updateTableRow(tableName, rowIndex, valuesArray){
-//   const body = { values: [ valuesArray ] };
-//   // note: rowIndex is 0-based in Graph for rows
-//   const res = await graphFetch(`${WORKBOOK_PATH}/workbook/tables('${encodeURIComponent(tableName)}')/rows/${rowIndex}`, "PATCH", body);
-//   return res;
-// }
 
 /* ---------- auth & init ---------- */
 async function checkLogin(){
