@@ -142,7 +142,8 @@ const MSAL_CONFIG = {
   auth: {
     clientId: CLIENT_ID,
     authority: `https://login.microsoftonline.com/${TENANT_ID}`,
-    redirectUri: window.location.origin
+    // redirectUri: window.location.origin
+    redirectUri: window.location.origin + "/reusable-box-tracker-new/"
   },
   cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false }
 };
@@ -248,15 +249,6 @@ async function checkLogin(){
   await loadUsersAndDecideAdmin();
 }
 
-// btnLogin.onclick = async()=> {
-//   try{
-//     await msalInstance.loginPopup({ scopes: GRAPH_SCOPES });
-//     await checkLogin();
-//     initUI();
-//   }catch(e){ alert("Login failed: "+e.message) }
-// };
-// btnLogout.onclick = async()=>{ msalInstance.logoutPopup(); location.reload(); };
-// Handle redirect responses (Safari-safe)
 
 msalInstance.handleRedirectPromise().then(async (resp) => {
   if (resp) {
@@ -294,6 +286,99 @@ async function loadUsersAndDecideAdmin(){
 }
 
 /* ---------- UI rendering & scanning ---------- */
+async function renderAdminDashboard() {
+      if (!isAdmin) return;
+
+      const adminArea = document.getElementById("adminArea");
+      adminArea.innerHTML = "Loading…";
+
+      try {
+        const rows = await readTableRows("Movements");
+        const movements = rows.map(r => r.values[0]).map(arr => ({
+          timestamp: arr[0],
+          event_type: arr[1],
+          user: arr[2],
+          barcode: arr[3],
+          barcode_norm: arr[4],
+          invoice: arr[5],
+          invoice_norm: arr[6],
+          message: arr[7]
+        }));
+
+        const boxes = deriveBoxStates(movements);
+
+        const total = boxes.length;
+        const withCustomer = boxes.filter(b => b.status === "customer").length;
+        const factory = boxes.filter(b => b.status === "factory").length;
+        const discarded = boxes.filter(b => b.status === "discarded").length;
+
+        adminArea.innerHTML = `
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
+            <div class="card"><strong>Total Boxes</strong><div>${total}</div></div>
+            <div class="card"><strong>With Customer</strong><div>${withCustomer}</div></div>
+            <div class="card"><strong>In Factory</strong><div>${factory}</div></div>
+            <div class="card"><strong>Discarded</strong><div>${discarded}</div></div>
+            <div class="card"><strong>Total Movements</strong><div>${movements.length}</div></div>
+          </div>
+
+          <h4 style="margin-top:18px">Current Box State</h4>
+          <table>
+            <thead>
+              <tr>
+                <th>Barcode</th>
+                <th>Status</th>
+                <th>Last Invoice</th>
+                <th>Times Used</th>
+                <th>Last Movement</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${boxes.map(b => `
+                <tr>
+                  <td>${b.barcode}</td>
+                  <td>${b.status || "-"}</td>
+                  <td>${b.last_invoice || "-"}</td>
+                  <td>${b.times_used}</td>
+                  <td>${b.last_moved_at || "-"}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+
+          <h4 style="margin-top:18px">Recent Activity</h4>
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Event</th>
+                <th>User</th>
+                <th>Barcode</th>
+                <th>Invoice</th>
+                <th>Message</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${movements.slice(-25).reverse().map(m => `
+                <tr>
+                  <td>${m.timestamp}</td>
+                  <td>${m.event_type}</td>
+                  <td>${m.user}</td>
+                  <td>${m.barcode}</td>
+                  <td>${m.invoice || "-"}</td>
+                  <td>${m.message || ""}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        `;
+      } catch (e) {
+        adminArea.innerHTML = `<div class="muted">Failed to load admin data</div>`;
+        console.error(e);
+      }
+    }
+
+
+
 function initUI(){
   // mode selectors
   document.getElementById("modeIN").onclick = ()=> selectMode("IN");
@@ -301,9 +386,14 @@ function initUI(){
   document.getElementById("modeDIS").onclick = ()=> selectMode("DISCARD");
   // admin buttons
   btnExportCSV.onclick = exportMovementsCSV;
-  btnReloadTables.onclick = async ()=> { await loadWorkbookMeta(); alert("Reloaded workbook info"); };
+  btnReloadTables.onclick = async ()=> {
+  await renderAdminDashboard();
+  };
   // if already logged in, set UI
   checkLogin();
+  if (isAdmin) {
+  renderAdminDashboard();
+  }
 }
 
 function selectMode(m){
@@ -460,6 +550,46 @@ function lastInvoiceForBox(movements, barcodeNorm) {
   const m = [...movements].reverse().find(x => x.barcode_norm === barcodeNorm && x.event_type === "OUT");
   return m ? m.invoice_norm : null;
 }
+
+
+function deriveBoxStates(movements) {
+  const map = {};
+
+  for (const m of movements) {
+    const b = m.barcode_norm;
+    if (!map[b]) {
+      map[b] = {
+        barcode: m.barcode,
+        barcode_norm: b,
+        status: null,
+        last_invoice: "",
+        times_used: 0,
+        last_moved_at: null
+      };
+    }
+
+    map[b].last_moved_at = m.timestamp;
+
+    if (m.event_type === "OUT") {
+      map[b].status = "customer";
+      map[b].last_invoice = m.invoice;
+      map[b].times_used += 1;
+    }
+
+    if (m.event_type === "IN") {
+      map[b].status = "factory";
+    }
+
+    if (m.event_type === "DISCARD") {
+      map[b].status = "discarded";
+    }
+  }
+
+  return Object.values(map);
+}
+
+
+
 
 async function handleBatchSubmit() {
   try {
