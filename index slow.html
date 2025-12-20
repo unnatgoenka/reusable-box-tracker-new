@@ -167,12 +167,20 @@ const WORKBOOK_PATH = `/sites/${SITE_ID}/drive/root:/CCIL ERP/Sales-Dispatch Tra
 // const WORKBOOK_PATH = "/me/drive/root:/CCIL ERP/Sales-Dispatch Tracker/ReusableBoxTracker.xlsx:";
 /* ============================================ */
 
+let rdu = ""
+if (window.location.origin.indexOf("localhost") !== -1) {
+  rdu = window.location.origin
+} else {
+  rdu = window.location.origin + "/reusable-box-tracker-new/"
+}
+
 const MSAL_CONFIG = {
   auth: {
     clientId: CLIENT_ID,
     authority: `https://login.microsoftonline.com/${TENANT_ID}`,
     // redirectUri: window.location.origin
-    redirectUri: window.location.origin + "/reusable-box-tracker-new/"
+    // redirectUri: window.location.origin + "/reusable-box-tracker-new/"
+    redirectUri: rdu
   },
   cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false }
 };
@@ -182,6 +190,8 @@ const GRAPH_SCOPES = ["openid","profile","User.Read","Files.ReadWrite.All","Site
 let account = null;
 let userEmail = "";
 let isAdmin = false;
+let authReady = false;
+
 
 // UI refs
 const btnLogin = document.getElementById("btnLogin");
@@ -198,16 +208,27 @@ let appState = { mode:null, invoice:"", scanned:[], codeReader:null, streamActiv
 
 /* ---------- Helpers ---------- */
 function norm(s){ return (s||"").toString().trim().toUpperCase(); }
-async function getToken(){
-  const active = msalInstance.getAllAccounts()[0];
-  if(!active) throw new Error("not-signed-in");
-  try {
-    const silent = await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: active });
-    return silent.accessToken;
-  } catch(e){
-    const result = await msalInstance.acquireTokenPopup({ scopes: GRAPH_SCOPES });
-    return result.accessToken;
-  }
+// async function getToken(){
+//   const active = msalInstance.getAllAccounts()[0];
+//   if(!active) throw new Error("not-signed-in");
+//   try {
+//     const silent = await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: active });
+//     return silent.accessToken;
+//   } catch(e){
+//     const result = await msalInstance.acquireTokenPopup({ scopes: GRAPH_SCOPES });
+//     return result.accessToken;
+//   }
+// }
+async function getToken() {
+  const account = msalInstance.getAllAccounts()[0];
+  if (!account) throw new Error("not-signed-in");
+
+  const result = await msalInstance.acquireTokenSilent({
+    scopes: GRAPH_SCOPES,
+    account
+  });
+
+  return result.accessToken;
 }
 async function graphFetch(path, method="GET", body=null) {
   const token = await getToken();
@@ -241,19 +262,40 @@ async function loadWorkbookMeta(){
   return info;
 }
 
-
 async function readTableRows(tableName){
   const r = await graphFetch(
     `${WORKBOOK_PATH}/workbook/tables('${encodeURIComponent(tableName)}')/rows`
   );
   return r.value || [];
 }
-async function addTableRow(tableName, valuesArray){
-  // Graph expects body: { "values": [ [c1, c2, ...] ] }
-  const body = { values: [ valuesArray ] };
-  const res = await graphFetch(`${WORKBOOK_PATH}/workbook/tables('${encodeURIComponent(tableName)}')/rows/add`, "POST", body);
-  return res;
+
+// async function addTableRow(tableName, valuesArray){
+//   // Graph expects body: { "values": [ [c1, c2, ...] ] }
+//   const body = { values: [ valuesArray ] };
+//   const res = await graphFetch(`${WORKBOOK_PATH}/workbook/tables('${encodeURIComponent(tableName)}')/rows/add`, "POST", body);
+//   return res;
+// }
+
+async function getLastRowIndex() {
+  const res = await graphFetch(
+    `${WORKBOOK_PATH}/workbook/worksheets('Movements')/usedRange?$select=rowCount`
+  );
+  return res.rowCount; // 1-based count including header
 }
+
+async function appendMovementRow(valuesArray) {
+  const lastRow = await getLastRowIndex();
+  const nextRow = lastRow + 1;
+
+  const address = `A${nextRow}:H${nextRow}`;
+
+  await graphFetch(
+    `${WORKBOOK_PATH}/workbook/worksheets('Movements')/range(address='${address}')`,
+    "PATCH",
+    { values: [valuesArray] }
+  );
+}
+
 
 
 
@@ -274,6 +316,7 @@ async function checkLogin(){
   // load workbook meta and check admin
   await loadWorkbookMeta().catch(e=>console.error("wb",e));
   await loadUsersAndDecideAdmin();
+  authReady = true;
 }
 
 
@@ -619,6 +662,11 @@ function deriveBoxStates(movements) {
 
 
 async function handleBatchSubmit() {
+  if (!authReady) {
+    alert("Please wait, sign-in still in progress");
+    return;
+  }
+
   try {
     const movementsRows = await readTableRows("Movements");
     const movements = movementsRows.map(r => r.values[0]).map(arr => ({
@@ -662,6 +710,7 @@ async function handleBatchSubmit() {
       seen.add(b);
 
       const state = boxState[b] || { status: "never_used", discarded: false };
+      const exists = !!boxState[b];
 
       // ---------- OUT ----------
       if (appState.mode === "OUT") {
@@ -681,7 +730,18 @@ async function handleBatchSubmit() {
           continue;
         }
 
-        await addTableRow("Movements", [
+        // await addTableRow("Movements", [
+        //   nowISTExcel(),
+        //   "OUT",
+        //   userEmail,
+        //   raw,
+        //   b,
+        //   appState.invoice,
+        //   invNorm,
+        //   "Sent OUT"
+        // ]);
+
+        await appendMovementRow([
           nowISTExcel(),
           "OUT",
           userEmail,
@@ -691,17 +751,27 @@ async function handleBatchSubmit() {
           invNorm,
           "Sent OUT"
         ]);
+
         logs.push({ barcode: raw, ok: true, message: "Sent OUT" });
       }
 
       // ---------- IN ----------
       if (appState.mode === "IN") {
 
-        if (!state) {
+        // if (!state) {
+        //   logs.push({
+        //     barcode: raw,
+        //     ok: false,
+        //     message: "Box not found in system"
+        //   });
+        //   continue;
+        // }
+
+        if (!exists) {
           logs.push({
             barcode: raw,
             ok: false,
-            message: "Box not found in system"
+            message: "Box has never gone OUT"
           });
           continue;
         }
@@ -725,7 +795,18 @@ async function handleBatchSubmit() {
         }
 
         // ✅ valid IN
-        await addTableRow("Movements", [
+        // await addTableRow("Movements", [
+        //   nowISTExcel(),
+        //   "IN",
+        //   userEmail,
+        //   raw,
+        //   b,
+        //   "",
+        //   "",
+        //   "Returned IN"
+        // ]);
+
+        await appendMovementRow([
           nowISTExcel(),
           "IN",
           userEmail,
@@ -752,10 +833,22 @@ async function handleBatchSubmit() {
           continue;
         }
         if (state.status !== "factory") {
-          logs.push({ barcode: raw, ok: false, message: "Must be in factory to discard" });
+          logs.push({ barcode: raw, ok:false, message:"Box must be in factory to discard" });
           continue;
         }
-        await addTableRow("Movements", [
+
+        // await addTableRow("Movements", [
+        //   nowISTExcel(),
+        //   "DISCARD",
+        //   userEmail,
+        //   raw,
+        //   b,
+        //   "",
+        //   "",
+        //   "Discarded"
+        // ]);
+
+        await appendMovementRow([
           nowISTExcel(),
           "DISCARD",
           userEmail,
@@ -765,6 +858,7 @@ async function handleBatchSubmit() {
           "",
           "Discarded"
         ]);
+
         logs.push({ barcode: raw, ok: true, message: "Discarded" });
       }
     }
@@ -811,9 +905,9 @@ async function exportMovementsCSV(){
 window.addEventListener("load", async ()=>{
   initUI();
   // If signed-in through redirect, MSAL will have account; handle that
-  msalInstance.handleRedirectPromise().then(async (resp)=>{
-    if(resp) { await checkLogin(); initUI(); }
-  }).catch(console.error);
+  // msalInstance.handleRedirectPromise().then(async (resp)=>{
+  //   if(resp) { await checkLogin(); initUI(); }
+  // }).catch(console.error);
 });
   </script>
 </body>
