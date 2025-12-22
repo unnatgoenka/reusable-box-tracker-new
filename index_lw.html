@@ -190,8 +190,7 @@ const GRAPH_SCOPES = ["openid","profile","User.Read","Files.ReadWrite.All","Site
 let account = null;
 let userEmail = "";
 let isAdmin = false;
-let authReady = false;
-
+let isSubmitting = false;
 
 // UI refs
 const btnLogin = document.getElementById("btnLogin");
@@ -220,8 +219,10 @@ function norm(s){ return (s||"").toString().trim().toUpperCase(); }
 //   }
 // }
 async function getToken() {
-  const account = msalInstance.getAllAccounts()[0];
-  if (!account) throw new Error("not-signed-in");
+  const account = msalInstance.getActiveAccount();
+  if (!account) {
+    throw new Error("No active session. Please sign in again.");
+  }
 
   const result = await msalInstance.acquireTokenSilent({
     scopes: GRAPH_SCOPES,
@@ -230,6 +231,7 @@ async function getToken() {
 
   return result.accessToken;
 }
+
 async function graphFetch(path, method="GET", body=null) {
   const token = await getToken();
   const res = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
@@ -242,6 +244,24 @@ async function graphFetch(path, method="GET", body=null) {
   }
   return res.json();
 }
+
+function nowISTExcel() {
+  const d = new Date();
+
+  // Convert UTC → IST (+5:30)
+  const ist = new Date(d.getTime() + (5.5 * 60 * 60 * 1000));
+
+  const yyyy = ist.getFullYear();
+  const mm = String(ist.getMonth() + 1).padStart(2, "0");
+  const dd = String(ist.getDate()).padStart(2, "0");
+  const hh = String(ist.getHours()).padStart(2, "0");
+  const mi = String(ist.getMinutes()).padStart(2, "0");
+  const ss = String(ist.getSeconds()).padStart(2, "0");
+
+  // Excel-friendly datetime string
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+}
+
 
 /* ---------- Workbook helpers ----------
  We'll use path-based endpoints:
@@ -262,40 +282,28 @@ async function loadWorkbookMeta(){
   return info;
 }
 
+
 async function readTableRows(tableName){
   const r = await graphFetch(
     `${WORKBOOK_PATH}/workbook/tables('${encodeURIComponent(tableName)}')/rows`
   );
   return r.value || [];
 }
-
-// async function addTableRow(tableName, valuesArray){
-//   // Graph expects body: { "values": [ [c1, c2, ...] ] }
-//   const body = { values: [ valuesArray ] };
-//   const res = await graphFetch(`${WORKBOOK_PATH}/workbook/tables('${encodeURIComponent(tableName)}')/rows/add`, "POST", body);
-//   return res;
-// }
-
-async function getLastRowIndex() {
-  const res = await graphFetch(
-    `${WORKBOOK_PATH}/workbook/worksheets('Movements')/usedRange?$select=rowCount`
-  );
-  return res.rowCount; // 1-based count including header
+async function addTableRow(tableName, valuesArray){
+  // Graph expects body: { "values": [ [c1, c2, ...] ] }
+  const body = { values: [ valuesArray ] };
+  const res = await graphFetch(`${WORKBOOK_PATH}/workbook/tables('${encodeURIComponent(tableName)}')/rows/add`, "POST", body);
+  return res;
 }
 
-async function appendMovementRow(valuesArray) {
-  const lastRow = await getLastRowIndex();
-  const nextRow = lastRow + 1;
-
-  const address = `A${nextRow}:H${nextRow}`;
-
+async function addMovementRowsBulk(rows) {
+  const body = { values: rows };
   await graphFetch(
-    `${WORKBOOK_PATH}/workbook/worksheets('Movements')/range(address='${address}')`,
-    "PATCH",
-    { values: [valuesArray] }
+    `${WORKBOOK_PATH}/workbook/tables('Movements')/rows/add`,
+    "POST",
+    body
   );
 }
-
 
 
 
@@ -316,16 +324,22 @@ async function checkLogin(){
   // load workbook meta and check admin
   await loadWorkbookMeta().catch(e=>console.error("wb",e));
   await loadUsersAndDecideAdmin();
-  authReady = true;
+  if (isAdmin) {
+  renderAdminDashboard();
+}
+
 }
 
 
 msalInstance.handleRedirectPromise().then(async (resp) => {
-  if (resp) {
-    await checkLogin();
-    initUI();
+  if (resp && resp.account) {
+    msalInstance.setActiveAccount(resp.account);
   }
+
+  await checkLogin();
+  initUI();
 }).catch(console.error);
+
 
 btnLogin.onclick = () => {
   msalInstance.loginRedirect({ scopes: GRAPH_SCOPES });
@@ -356,6 +370,37 @@ async function loadUsersAndDecideAdmin(){
 }
 
 /* ---------- UI rendering & scanning ---------- */
+
+function lockSubmissionUI() {
+  isSubmitting = true;
+
+  const done = document.getElementById("btnDone");
+  const remove = document.getElementById("btnRemove");
+  const reset = document.getElementById("btnReset");
+  const overlay = document.getElementById("submitOverlay");
+
+  if (done) done.disabled = true;
+  if (remove) remove.disabled = true;
+  if (reset) reset.disabled = true;
+  if (overlay) overlay.style.display = "block";
+}
+
+function unlockSubmissionUI() {
+  isSubmitting = false;
+
+  const done = document.getElementById("btnDone");
+  const remove = document.getElementById("btnRemove");
+  const reset = document.getElementById("btnReset");
+  const overlay = document.getElementById("submitOverlay");
+
+  if (done) done.disabled = false;
+  if (remove) remove.disabled = false;
+  if (reset) reset.disabled = false;
+  if (overlay) overlay.style.display = "none";
+}
+
+
+
 async function renderAdminDashboard() {
       if (!isAdmin) return;
 
@@ -529,6 +574,20 @@ function renderScannerArea(){
       </div>
     </details>
 
+    <div id="submitOverlay" style="
+          display:none;
+          position:relative;
+          margin-top:10px;
+          padding:10px;
+          border-radius:10px;
+          background:#eef2ff;
+          color:#354ba0;
+          font-weight:600;
+          text-align:center;
+        ">
+          Saving… please wait
+    </div>
+
     <div class="controls">
       <button id="btnDone" class="btn">DONE</button>
       <button id="btnRemove" class="btn secondary">Remove last</button>
@@ -548,6 +607,8 @@ function renderScannerArea(){
     document.getElementById("manualCode").value = "";
     updateScannedUI();
   };
+
+
 
   document.getElementById("btnRemove").onclick = () => {
     appState.scanned.pop();
@@ -661,13 +722,182 @@ function deriveBoxStates(movements) {
 
 
 
+// async function handleBatchSubmit() {
+//   if (isSubmitting) return;
+//   lockSubmissionUI();
+
+//   try {
+//     const movementsRows = await readTableRows("Movements");
+//     const movements = movementsRows.map(r => r.values[0]).map(arr => ({
+//       timestamp: arr[0],
+//       event_type: arr[1],
+//       user_email: arr[2],
+//       barcode: arr[3],
+//       barcode_norm: norm(arr[4] || arr[3]),
+//       invoice: arr[5],
+//       invoice_norm: norm(arr[6]),
+//       message: arr[7]
+//     }));
+
+//     const boxState = buildBoxState(movements);
+//     const logs = [];
+//     const seen = new Set();
+
+//     function nowISTExcel() {
+//     const d = new Date();
+//     // Convert UTC → IST
+//     const ist = new Date(d.getTime() + (5.5 * 60 * 60 * 1000));
+
+//     const yyyy = ist.getFullYear();
+//     const mm = String(ist.getMonth() + 1).padStart(2, "0");
+//     const dd = String(ist.getDate()).padStart(2, "0");
+//     const hh = String(ist.getHours()).padStart(2, "0");
+//     const mi = String(ist.getMinutes()).padStart(2, "0");
+//     const ss = String(ist.getSeconds()).padStart(2, "0");
+
+//     // Excel-friendly datetime
+//     return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+//   }
+
+
+//     for (const raw of appState.scanned) {
+//       const b = norm(raw);
+//       if (seen.has(b)) {
+//         logs.push({ barcode: raw, ok: false, message: "Duplicate in same batch" });
+//         continue;
+//       }
+//       seen.add(b);
+
+//       const state = boxState[b] || { status: "never_used", discarded: false };
+
+//       // ---------- OUT ----------
+//       if (appState.mode === "OUT") {
+//         const invNorm = norm(appState.invoice);
+
+//         if (state.discarded) {
+//           logs.push({ barcode: raw, ok: false, message: "Box discarded permanently" });
+//           continue;
+//         }
+//         if (state.status === "customer") {
+//           logs.push({ barcode: raw, ok: false, message: "Box already with customer" });
+//           continue;
+//         }
+//         const lastInv = lastInvoiceForBox(movements, b);
+//         if (lastInv === invNorm) {
+//           logs.push({ barcode: raw, ok: false, message: "Same box already sent on this invoice" });
+//           continue;
+//         }
+
+//         await addTableRow("Movements", [
+//           nowISTExcel(),
+//           "OUT",
+//           userEmail,
+//           raw,
+//           b,
+//           appState.invoice,
+//           invNorm,
+//           "Sent OUT"
+//         ]);
+//         logs.push({ barcode: raw, ok: true, message: "Sent OUT" });
+//       }
+
+//       // ---------- IN ----------
+//       if (appState.mode === "IN") {
+
+//         if (!state) {
+//           logs.push({
+//             barcode: raw,
+//             ok: false,
+//             message: "Box not found in system"
+//           });
+//           continue;
+//         }
+
+//         if (state.status === "discarded") {
+//           logs.push({
+//             barcode: raw,
+//             ok: false,
+//             message: "Box is discarded and cannot be moved"
+//           });
+//           continue;
+//         }
+
+//         if (state.status !== "customer") {
+//           logs.push({
+//             barcode: raw,
+//             ok: false,
+//             message: "Box is not with customer"
+//           });
+//           continue;
+//         }
+
+//         // ✅ valid IN
+//         await addTableRow("Movements", [
+//           nowISTExcel(),
+//           "IN",
+//           userEmail,
+//           raw,
+//           b,
+//           "",
+//           "",
+//           "Returned IN"
+//         ]);
+
+//         logs.push({
+//           barcode: raw,
+//           ok: true,
+//           message: "Returned IN"
+//         });
+//       }
+
+
+
+//       // ---------- DISCARD ----------
+//       if (appState.mode === "DISCARD") {
+//         if (state.discarded) {
+//           logs.push({ barcode: raw, ok: false, message: "Already discarded" });
+//           continue;
+//         }
+//         if (state.status !== "factory") {
+//           logs.push({ barcode: raw, ok: false, message: "Must be in factory to discard" });
+//           continue;
+//         }
+//         await addTableRow("Movements", [
+//           nowISTExcel(),
+//           "DISCARD",
+//           userEmail,
+//           raw,
+//           b,
+//           "",
+//           "",
+//           "Discarded"
+//         ]);
+//         logs.push({ barcode: raw, ok: true, message: "Discarded" });
+//       }
+//     }
+
+//     renderResultLogs(logs);
+//     if (logs.some(l => l.ok)) {
+//       appState.scanned = [];
+//       updateScannedUI();
+//     }
+//   } catch (e) {
+//     alert("Error processing batch: " + e.message);
+//     console.error(e);
+//   }
+// }
+
+
 async function handleBatchSubmit() {
-  if (!authReady) {
-    alert("Please wait, sign-in still in progress");
-    return;
-  }
+
+  // 1️⃣ Block double-clicks / spam
+  if (isSubmitting) return;
+  lockSubmissionUI();
+
 
   try {
+
+    // 2️⃣ Read movements ONCE
     const movementsRows = await readTableRows("Movements");
     const movements = movementsRows.map(r => r.values[0]).map(arr => ({
       timestamp: arr[0],
@@ -681,28 +911,14 @@ async function handleBatchSubmit() {
     }));
 
     const boxState = buildBoxState(movements);
+
+    const rowsToWrite = [];   // 👈 KEY CHANGE
     const logs = [];
     const seen = new Set();
 
-    function nowISTExcel() {
-    const d = new Date();
-    // Convert UTC → IST
-    const ist = new Date(d.getTime() + (5.5 * 60 * 60 * 1000));
-
-    const yyyy = ist.getFullYear();
-    const mm = String(ist.getMonth() + 1).padStart(2, "0");
-    const dd = String(ist.getDate()).padStart(2, "0");
-    const hh = String(ist.getHours()).padStart(2, "0");
-    const mi = String(ist.getMinutes()).padStart(2, "0");
-    const ss = String(ist.getSeconds()).padStart(2, "0");
-
-    // Excel-friendly datetime
-    return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
-  }
-
-
     for (const raw of appState.scanned) {
       const b = norm(raw);
+
       if (seen.has(b)) {
         logs.push({ barcode: raw, ok: false, message: "Duplicate in same batch" });
         continue;
@@ -710,38 +926,29 @@ async function handleBatchSubmit() {
       seen.add(b);
 
       const state = boxState[b] || { status: "never_used", discarded: false };
-      const exists = !!boxState[b];
 
       // ---------- OUT ----------
       if (appState.mode === "OUT") {
+
         const invNorm = norm(appState.invoice);
 
         if (state.discarded) {
           logs.push({ barcode: raw, ok: false, message: "Box discarded permanently" });
           continue;
         }
+
         if (state.status === "customer") {
           logs.push({ barcode: raw, ok: false, message: "Box already with customer" });
           continue;
         }
+
         const lastInv = lastInvoiceForBox(movements, b);
         if (lastInv === invNorm) {
           logs.push({ barcode: raw, ok: false, message: "Same box already sent on this invoice" });
           continue;
         }
 
-        // await addTableRow("Movements", [
-        //   nowISTExcel(),
-        //   "OUT",
-        //   userEmail,
-        //   raw,
-        //   b,
-        //   appState.invoice,
-        //   invNorm,
-        //   "Sent OUT"
-        // ]);
-
-        await appendMovementRow([
+        rowsToWrite.push([
           nowISTExcel(),
           "OUT",
           userEmail,
@@ -758,55 +965,17 @@ async function handleBatchSubmit() {
       // ---------- IN ----------
       if (appState.mode === "IN") {
 
-        // if (!state) {
-        //   logs.push({
-        //     barcode: raw,
-        //     ok: false,
-        //     message: "Box not found in system"
-        //   });
-        //   continue;
-        // }
-
-        if (!exists) {
-          logs.push({
-            barcode: raw,
-            ok: false,
-            message: "Box has never gone OUT"
-          });
-          continue;
-        }
-
-        if (state.status === "discarded") {
-          logs.push({
-            barcode: raw,
-            ok: false,
-            message: "Box is discarded and cannot be moved"
-          });
+        if (state.discarded) {
+          logs.push({ barcode: raw, ok: false, message: "Box is discarded" });
           continue;
         }
 
         if (state.status !== "customer") {
-          logs.push({
-            barcode: raw,
-            ok: false,
-            message: "Box is not with customer"
-          });
+          logs.push({ barcode: raw, ok: false, message: "Box is not with customer" });
           continue;
         }
 
-        // ✅ valid IN
-        // await addTableRow("Movements", [
-        //   nowISTExcel(),
-        //   "IN",
-        //   userEmail,
-        //   raw,
-        //   b,
-        //   "",
-        //   "",
-        //   "Returned IN"
-        // ]);
-
-        await appendMovementRow([
+        rowsToWrite.push([
           nowISTExcel(),
           "IN",
           userEmail,
@@ -817,38 +986,23 @@ async function handleBatchSubmit() {
           "Returned IN"
         ]);
 
-        logs.push({
-          barcode: raw,
-          ok: true,
-          message: "Returned IN"
-        });
+        logs.push({ barcode: raw, ok: true, message: "Returned IN" });
       }
-
-
 
       // ---------- DISCARD ----------
       if (appState.mode === "DISCARD") {
+
         if (state.discarded) {
           logs.push({ barcode: raw, ok: false, message: "Already discarded" });
           continue;
         }
+
         if (state.status !== "factory") {
-          logs.push({ barcode: raw, ok:false, message:"Box must be in factory to discard" });
+          logs.push({ barcode: raw, ok: false, message: "Must be in factory to discard" });
           continue;
         }
 
-        // await addTableRow("Movements", [
-        //   nowISTExcel(),
-        //   "DISCARD",
-        //   userEmail,
-        //   raw,
-        //   b,
-        //   "",
-        //   "",
-        //   "Discarded"
-        // ]);
-
-        await appendMovementRow([
+        rowsToWrite.push([
           nowISTExcel(),
           "DISCARD",
           userEmail,
@@ -863,16 +1017,27 @@ async function handleBatchSubmit() {
       }
     }
 
+    // 3️⃣ WRITE ONCE (this fixes last-row-only bug)
+    if (rowsToWrite.length > 0) {
+      await addMovementRowsBulk(rowsToWrite);
+    }
+
     renderResultLogs(logs);
+
+    // 4️⃣ Clear batch only if something succeeded
     if (logs.some(l => l.ok)) {
       appState.scanned = [];
       updateScannedUI();
     }
+
   } catch (e) {
     alert("Error processing batch: " + e.message);
     console.error(e);
+  } finally {
+    unlockSubmissionUI();
   }
 }
+
 
 
 function renderResultLogs(logs){
