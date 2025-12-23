@@ -251,33 +251,39 @@ function nowExcelLocal() {
 }
 
 function formatForDisplay(ts) {
-  if (!ts) return "-";
+  if (ts === null || ts === undefined) return "-";
 
-  let d;
+  let d = null;
 
-  // Case 1: already a Date object
-  if (ts instanceof Date) {
-    d = ts;
-  }
+  try {
+    // Excel serial number
+    if (typeof ts === "number") {
+      d = new Date((ts - 25569) * 86400 * 1000);
+    }
 
-  // Case 2: Excel serial number (number)
-  else if (typeof ts === "number") {
-    // Excel epoch starts at 1899-12-30
-    d = new Date(Math.round((ts - 25569) * 86400 * 1000));
-  }
+    // Date object
+    else if (ts instanceof Date) {
+      d = new Date(ts.getTime());
+    }
 
-  // Case 3: string
-  else if (typeof ts === "string") {
-    // Normalize "YYYY-MM-DD HH:mm:ss" → ISO
-    d = new Date(ts.replace(" ", "T"));
-  }
-
-  // Anything else
-  else {
+    // String
+    else if (typeof ts === "string") {
+      if (ts.includes("T")) {
+        d = new Date(ts);
+      } else if (ts.includes(" ")) {
+        d = new Date(ts.replace(" ", "T"));
+      } else {
+        d = new Date(ts);
+      }
+    }
+  } catch {
     return "-";
   }
 
-  if (isNaN(d.getTime())) return "-";
+  if (!d || isNaN(d.getTime())) return "-";
+
+  // 🔥 FIX: subtract 5 hours 30 minutes (IST offset)
+  d = new Date(d.getTime() - (5.5 * 60 * 60 * 1000));
 
   return d.toLocaleString("en-IN", {
     day: "2-digit",
@@ -285,9 +291,13 @@ function formatForDisplay(ts) {
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    // second: "2-digit",
     hour12: true
   });
 }
+
+
+
 
 
 function showLoggedOutState() {
@@ -357,28 +367,6 @@ async function startApp() {
   await postLoginInit();
 }
 
-
-// async function checkLogin(){
-//   const accounts = msalInstance.getAllAccounts();
-//   if(accounts.length===0){
-//     userEmailEl.textContent = "";
-//     btnLogin.style.display = "inline-block";
-//     btnLogout.style.display = "none";
-//     return;
-//   }
-
-//   account = accounts[0];
-//   userEmail = account.username || account.email || account.homeAccountId;
-//   userEmailEl.textContent = userEmail;
-//   btnLogin.style.display = "none";
-//   btnLogout.style.display = "inline-block";
-//   // load workbook meta and check admin
-//   await loadWorkbookMeta().catch(e=>console.error("wb",e));
-//   await loadUsersAndDecideAdmin();
-//   if (isAdmin) {
-//   renderAdminDashboard();
-//   }
-// }
 
 
 async function postLoginInit() {
