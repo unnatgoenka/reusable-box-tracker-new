@@ -245,22 +245,32 @@ async function graphFetch(path, method="GET", body=null) {
   return res.json();
 }
 
-function nowISTExcel() {
-  const d = new Date();
+function nowExcelLocal() {
+  const d = new Date(); // already IST in your case
 
-  // Convert UTC → IST (+5:30)
-  const ist = new Date(d.getTime() + (5.5 * 60 * 60 * 1000));
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
 
-  const yyyy = ist.getFullYear();
-  const mm = String(ist.getMonth() + 1).padStart(2, "0");
-  const dd = String(ist.getDate()).padStart(2, "0");
-  const hh = String(ist.getHours()).padStart(2, "0");
-  const mi = String(ist.getMinutes()).padStart(2, "0");
-  const ss = String(ist.getSeconds()).padStart(2, "0");
-
-  // Excel-friendly datetime string
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 }
+
+function formatForDisplay(ts) {
+  if (!ts) return "-";
+  const d = new Date(ts.replace(" ", "T"));
+  return d.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true
+  });
+}
+
 
 
 /* ---------- Workbook helpers ----------
@@ -454,7 +464,7 @@ async function renderAdminDashboard() {
                   <td>${b.status || "-"}</td>
                   <td>${b.last_invoice || "-"}</td>
                   <td>${b.times_used}</td>
-                  <td>${b.last_moved_at || "-"}</td>
+                  <td>${formatForDisplay(b.last_moved_at)}</td>
                 </tr>
               `).join("")}
             </tbody>
@@ -475,7 +485,7 @@ async function renderAdminDashboard() {
             <tbody>
               ${movements.slice(-25).reverse().map(m => `
                 <tr>
-                  <td>${m.timestamp}</td>
+                  <td>${formatForDisplay(m.timestamp)}</td>
                   <td>${m.event_type}</td>
                   <td>${m.user}</td>
                   <td>${m.barcode}</td>
@@ -721,173 +731,6 @@ function deriveBoxStates(movements) {
 
 
 
-
-// async function handleBatchSubmit() {
-//   if (isSubmitting) return;
-//   lockSubmissionUI();
-
-//   try {
-//     const movementsRows = await readTableRows("Movements");
-//     const movements = movementsRows.map(r => r.values[0]).map(arr => ({
-//       timestamp: arr[0],
-//       event_type: arr[1],
-//       user_email: arr[2],
-//       barcode: arr[3],
-//       barcode_norm: norm(arr[4] || arr[3]),
-//       invoice: arr[5],
-//       invoice_norm: norm(arr[6]),
-//       message: arr[7]
-//     }));
-
-//     const boxState = buildBoxState(movements);
-//     const logs = [];
-//     const seen = new Set();
-
-//     function nowISTExcel() {
-//     const d = new Date();
-//     // Convert UTC → IST
-//     const ist = new Date(d.getTime() + (5.5 * 60 * 60 * 1000));
-
-//     const yyyy = ist.getFullYear();
-//     const mm = String(ist.getMonth() + 1).padStart(2, "0");
-//     const dd = String(ist.getDate()).padStart(2, "0");
-//     const hh = String(ist.getHours()).padStart(2, "0");
-//     const mi = String(ist.getMinutes()).padStart(2, "0");
-//     const ss = String(ist.getSeconds()).padStart(2, "0");
-
-//     // Excel-friendly datetime
-//     return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
-//   }
-
-
-//     for (const raw of appState.scanned) {
-//       const b = norm(raw);
-//       if (seen.has(b)) {
-//         logs.push({ barcode: raw, ok: false, message: "Duplicate in same batch" });
-//         continue;
-//       }
-//       seen.add(b);
-
-//       const state = boxState[b] || { status: "never_used", discarded: false };
-
-//       // ---------- OUT ----------
-//       if (appState.mode === "OUT") {
-//         const invNorm = norm(appState.invoice);
-
-//         if (state.discarded) {
-//           logs.push({ barcode: raw, ok: false, message: "Box discarded permanently" });
-//           continue;
-//         }
-//         if (state.status === "customer") {
-//           logs.push({ barcode: raw, ok: false, message: "Box already with customer" });
-//           continue;
-//         }
-//         const lastInv = lastInvoiceForBox(movements, b);
-//         if (lastInv === invNorm) {
-//           logs.push({ barcode: raw, ok: false, message: "Same box already sent on this invoice" });
-//           continue;
-//         }
-
-//         await addTableRow("Movements", [
-//           nowISTExcel(),
-//           "OUT",
-//           userEmail,
-//           raw,
-//           b,
-//           appState.invoice,
-//           invNorm,
-//           "Sent OUT"
-//         ]);
-//         logs.push({ barcode: raw, ok: true, message: "Sent OUT" });
-//       }
-
-//       // ---------- IN ----------
-//       if (appState.mode === "IN") {
-
-//         if (!state) {
-//           logs.push({
-//             barcode: raw,
-//             ok: false,
-//             message: "Box not found in system"
-//           });
-//           continue;
-//         }
-
-//         if (state.status === "discarded") {
-//           logs.push({
-//             barcode: raw,
-//             ok: false,
-//             message: "Box is discarded and cannot be moved"
-//           });
-//           continue;
-//         }
-
-//         if (state.status !== "customer") {
-//           logs.push({
-//             barcode: raw,
-//             ok: false,
-//             message: "Box is not with customer"
-//           });
-//           continue;
-//         }
-
-//         // ✅ valid IN
-//         await addTableRow("Movements", [
-//           nowISTExcel(),
-//           "IN",
-//           userEmail,
-//           raw,
-//           b,
-//           "",
-//           "",
-//           "Returned IN"
-//         ]);
-
-//         logs.push({
-//           barcode: raw,
-//           ok: true,
-//           message: "Returned IN"
-//         });
-//       }
-
-
-
-//       // ---------- DISCARD ----------
-//       if (appState.mode === "DISCARD") {
-//         if (state.discarded) {
-//           logs.push({ barcode: raw, ok: false, message: "Already discarded" });
-//           continue;
-//         }
-//         if (state.status !== "factory") {
-//           logs.push({ barcode: raw, ok: false, message: "Must be in factory to discard" });
-//           continue;
-//         }
-//         await addTableRow("Movements", [
-//           nowISTExcel(),
-//           "DISCARD",
-//           userEmail,
-//           raw,
-//           b,
-//           "",
-//           "",
-//           "Discarded"
-//         ]);
-//         logs.push({ barcode: raw, ok: true, message: "Discarded" });
-//       }
-//     }
-
-//     renderResultLogs(logs);
-//     if (logs.some(l => l.ok)) {
-//       appState.scanned = [];
-//       updateScannedUI();
-//     }
-//   } catch (e) {
-//     alert("Error processing batch: " + e.message);
-//     console.error(e);
-//   }
-// }
-
-
 async function handleBatchSubmit() {
 
   // 1️⃣ Block double-clicks / spam
@@ -949,7 +792,7 @@ async function handleBatchSubmit() {
         }
 
         rowsToWrite.push([
-          nowISTExcel(),
+          nowExcelLocal(),
           "OUT",
           userEmail,
           raw,
@@ -976,7 +819,7 @@ async function handleBatchSubmit() {
         }
 
         rowsToWrite.push([
-          nowISTExcel(),
+          nowExcelLocal(),
           "IN",
           userEmail,
           raw,
@@ -1003,7 +846,7 @@ async function handleBatchSubmit() {
         }
 
         rowsToWrite.push([
-          nowISTExcel(),
+          nowExcelLocal(),
           "DISCARD",
           userEmail,
           raw,
