@@ -185,6 +185,7 @@ const MSAL_CONFIG = {
   cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false }
 };
 const msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
+let authReady = false;
 const GRAPH_SCOPES = ["openid","profile","User.Read","Files.ReadWrite.All","Sites.ReadWrite.All","offline_access"];
 
 let account = null;
@@ -207,22 +208,11 @@ let appState = { mode:null, invoice:"", scanned:[], codeReader:null, streamActiv
 
 /* ---------- Helpers ---------- */
 function norm(s){ return (s||"").toString().trim().toUpperCase(); }
-// async function getToken(){
-//   const active = msalInstance.getAllAccounts()[0];
-//   if(!active) throw new Error("not-signed-in");
-//   try {
-//     const silent = await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: active });
-//     return silent.accessToken;
-//   } catch(e){
-//     const result = await msalInstance.acquireTokenPopup({ scopes: GRAPH_SCOPES });
-//     return result.accessToken;
-//   }
-// }
+
 async function getToken() {
+  if (!authReady) throw new Error("Auth not ready");
   const account = msalInstance.getActiveAccount();
-  if (!account) {
-    throw new Error("No active session. Please sign in again.");
-  }
+  if (!account) throw new Error("Not signed in");
 
   const result = await msalInstance.acquireTokenSilent({
     scopes: GRAPH_SCOPES,
@@ -231,6 +221,8 @@ async function getToken() {
 
   return result.accessToken;
 }
+
+
 
 async function graphFetch(path, method="GET", body=null) {
   const token = await getToken();
@@ -260,7 +252,33 @@ function nowExcelLocal() {
 
 function formatForDisplay(ts) {
   if (!ts) return "-";
-  const d = new Date(ts.replace(" ", "T"));
+
+  let d;
+
+  // Case 1: already a Date object
+  if (ts instanceof Date) {
+    d = ts;
+  }
+
+  // Case 2: Excel serial number (number)
+  else if (typeof ts === "number") {
+    // Excel epoch starts at 1899-12-30
+    d = new Date(Math.round((ts - 25569) * 86400 * 1000));
+  }
+
+  // Case 3: string
+  else if (typeof ts === "string") {
+    // Normalize "YYYY-MM-DD HH:mm:ss" → ISO
+    d = new Date(ts.replace(" ", "T"));
+  }
+
+  // Anything else
+  else {
+    return "-";
+  }
+
+  if (isNaN(d.getTime())) return "-";
+
   return d.toLocaleString("en-IN", {
     day: "2-digit",
     month: "short",
@@ -269,6 +287,14 @@ function formatForDisplay(ts) {
     minute: "2-digit",
     hour12: true
   });
+}
+
+
+function showLoggedOutState() {
+  userEmailEl.textContent = "";
+  btnLogin.style.display = "inline-block";
+  btnLogout.style.display = "none";
+  adminCard.style.display = "none";
 }
 
 
@@ -318,45 +344,111 @@ async function addMovementRowsBulk(rows) {
 
 
 /* ---------- auth & init ---------- */
-async function checkLogin(){
+async function startApp() {
+  initUI(); // SAFE: UI only
+
   const accounts = msalInstance.getAllAccounts();
-  if(accounts.length===0){
+  if (accounts.length === 0) {
+    showLoggedOutState();
+    return;
+  }
+
+  msalInstance.setActiveAccount(accounts[0]);
+  await postLoginInit();
+}
+
+
+// async function checkLogin(){
+//   const accounts = msalInstance.getAllAccounts();
+//   if(accounts.length===0){
+//     userEmailEl.textContent = "";
+//     btnLogin.style.display = "inline-block";
+//     btnLogout.style.display = "none";
+//     return;
+//   }
+
+//   account = accounts[0];
+//   userEmail = account.username || account.email || account.homeAccountId;
+//   userEmailEl.textContent = userEmail;
+//   btnLogin.style.display = "none";
+//   btnLogout.style.display = "inline-block";
+//   // load workbook meta and check admin
+//   await loadWorkbookMeta().catch(e=>console.error("wb",e));
+//   await loadUsersAndDecideAdmin();
+//   if (isAdmin) {
+//   renderAdminDashboard();
+//   }
+// }
+
+
+async function postLoginInit() {
+  const accounts = msalInstance.getAllAccounts();
+  if (accounts.length === 0) {
+    // not logged in yet
     userEmailEl.textContent = "";
     btnLogin.style.display = "inline-block";
     btnLogout.style.display = "none";
+    initUI(); // UI without data
     return;
   }
+
+  msalInstance.setActiveAccount(accounts[0]);
+
   account = accounts[0];
-  userEmail = account.username || account.email || account.homeAccountId;
+  userEmail = account.username;
   userEmailEl.textContent = userEmail;
+
   btnLogin.style.display = "none";
   btnLogout.style.display = "inline-block";
-  // load workbook meta and check admin
-  await loadWorkbookMeta().catch(e=>console.error("wb",e));
+
+  initUI();                 // UI first
+  await loadWorkbookMeta(); // then data
   await loadUsersAndDecideAdmin();
+
   if (isAdmin) {
-  renderAdminDashboard();
-}
-
-}
-
-
-msalInstance.handleRedirectPromise().then(async (resp) => {
-  if (resp && resp.account) {
-    msalInstance.setActiveAccount(resp.account);
+    renderAdminDashboard();
   }
+}
 
-  await checkLogin();
-  initUI();
-}).catch(console.error);
+async function postLoginInit() {
+  const account = msalInstance.getActiveAccount();
+  if (!account) return;
+
+  userEmail = account.username;
+  userEmailEl.textContent = userEmail;
+
+  btnLogin.style.display = "none";
+  btnLogout.style.display = "inline-block";
+
+  await loadWorkbookMeta();
+  await loadUsersAndDecideAdmin();
+
+  if (isAdmin) {
+    renderAdminDashboard();
+  }
+}
+
+
+
+msalInstance.handleRedirectPromise()
+  .then((resp) => {
+    if (resp && resp.account) {
+      msalInstance.setActiveAccount(resp.account);
+    }
+    authReady = true;
+    startApp();   // 👈 single controlled entry point
+  })
+  .catch(console.error);
 
 
 btnLogin.onclick = () => {
   msalInstance.loginRedirect({ scopes: GRAPH_SCOPES });
 };
+
 btnLogout.onclick = () => {
   msalInstance.logoutRedirect();
 };
+
 
 
 /* ---------- users table / admin check ---------- */
@@ -503,23 +595,15 @@ async function renderAdminDashboard() {
     }
 
 
+function initUI() {
+  document.getElementById("modeIN").onclick = () => selectMode("IN");
+  document.getElementById("modeOUT").onclick = () => selectMode("OUT");
+  document.getElementById("modeDIS").onclick = () => selectMode("DISCARD");
 
-function initUI(){
-  // mode selectors
-  document.getElementById("modeIN").onclick = ()=> selectMode("IN");
-  document.getElementById("modeOUT").onclick = ()=> selectMode("OUT");
-  document.getElementById("modeDIS").onclick = ()=> selectMode("DISCARD");
-  // admin buttons
   btnExportCSV.onclick = exportMovementsCSV;
-  btnReloadTables.onclick = async ()=> {
-  await renderAdminDashboard();
-  };
-  // if already logged in, set UI
-  checkLogin();
-  if (isAdmin) {
-  renderAdminDashboard();
-  }
+  btnReloadTables.onclick = renderAdminDashboard;
 }
+
 
 function selectMode(m){
   appState.mode = m;
@@ -579,7 +663,7 @@ function renderScannerArea(){
     <details style="margin-top:10px">
       <summary style="cursor:pointer;font-weight:600">CLICK HERE TO DO MANUAL ENTRY</summary>
       <div style="display:flex;gap:8px;margin-top:10px">
-        <input id="manualCode" class="input" placeholder="Type barcode here & press "ADD" " />
+        <input id="manualCode" class="input" placeholder="Type barcode here & press 'ADD' " />
         <button id="addManual" class="btn secondary">ADD</button>
       </div>
     </details>
@@ -910,13 +994,7 @@ async function exportMovementsCSV(){
 }
 
 /* ---------- boot ---------- */
-window.addEventListener("load", async ()=>{
-  initUI();
-  // If signed-in through redirect, MSAL will have account; handle that
-  // msalInstance.handleRedirectPromise().then(async (resp)=>{
-  //   if(resp) { await checkLogin(); initUI(); }
-  // }).catch(console.error);
-});
+
   </script>
 </body>
 </html>
