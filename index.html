@@ -57,6 +57,15 @@
     }
     table{ width:100%; border-collapse:collapse; font-size:14px; margin-top:12px }
     th,td{ padding:8px; border-bottom:1px solid #f0f2f7; text-align:left }
+        /* === Admin table mobile overflow fix === */
+    .table-wrap {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .table-wrap table {
+      min-width: 700px;
+    }
     .badge { background:var(--primary); color:#fff; padding:6px 8px; border-radius:999px; font-weight:600 }
     .admin-panel{ margin-top:16px; display:flex; gap:10px; align-items:center; justify-content:space-between }
     .user-chip{ padding:6px 10px; border-radius:10px; background:#bfcfff; color:var(--primary); font-weight:600 }
@@ -578,6 +587,7 @@ async function renderAdminDashboard() {
           </div>
 
           <h4 style="margin-top:18px">Current Box State</h4>
+          <div class="table-wrap">
           <table>
             <thead>
               <tr>
@@ -589,7 +599,7 @@ async function renderAdminDashboard() {
               </tr>
             </thead>
             <tbody>
-              ${boxes.map(b => `
+              ${boxes.slice(0, 50).map(b => `
                 <tr>
                   <td>${b.barcode}</td>
                   <td>${b.status || "-"}</td>
@@ -600,8 +610,16 @@ async function renderAdminDashboard() {
               `).join("")}
             </tbody>
           </table>
+          </div>
+
+          ${boxes.length > 50 
+            ? `<div class="small muted" style="margin-top:6px">
+                 Showing first 50 boxes
+               </div>` 
+            : ""}
 
           <h4 style="margin-top:18px">Recent Activity</h4>
+          <div class="table-wrap">
           <table>
             <thead>
               <tr>
@@ -626,6 +644,7 @@ async function renderAdminDashboard() {
               `).join("")}
             </tbody>
           </table>
+          </div>
         `;
       } catch (e) {
         adminArea.innerHTML = `<div class="muted">Failed to load admin data</div>`;
