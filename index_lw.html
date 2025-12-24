@@ -193,6 +193,14 @@ let userEmail = "";
 let isAdmin = false;
 let isSubmitting = false;
 
+// ===== Movement cache (performance) =====
+const movementCache = {
+  loaded: false,
+  movements: [],
+  boxState: {}
+};
+
+
 // UI refs
 const btnLogin = document.getElementById("btnLogin");
 const btnLogout = document.getElementById("btnLogout");
@@ -297,15 +305,34 @@ function formatForDisplay(ts) {
 }
 
 
-
-
-
 function showLoggedOutState() {
   userEmailEl.textContent = "";
   btnLogin.style.display = "inline-block";
   btnLogout.style.display = "none";
   adminCard.style.display = "none";
 }
+
+async function preloadMovements() {
+  const rows = await readTableRows("Movements");
+
+  movementCache.movements = rows.map(r => {
+    const a = r.values[0];
+    return {
+      timestamp: a[0],
+      event_type: a[1],
+      user_email: a[2],
+      barcode: a[3],
+      barcode_norm: norm(a[4] || a[3]),
+      invoice: a[5],
+      invoice_norm: norm(a[6]),
+      message: a[7]
+    };
+  });
+
+  movementCache.boxState = buildBoxState(movementCache.movements);
+  movementCache.loaded = true;
+}
+
 
 
 
@@ -392,6 +419,7 @@ async function postLoginInit() {
   initUI();                 // UI first
   await loadWorkbookMeta(); // then data
   await loadUsersAndDecideAdmin();
+  await preloadMovements();
 
   if (isAdmin) {
     renderAdminDashboard();
@@ -409,6 +437,8 @@ async function postLoginInit() {
   btnLogout.style.display = "inline-block";
 
   await loadWorkbookMeta();
+  await loadMovementCacheOnce();
+  console.log("CACHE LOADED:", movementCache.movements.length);
   await loadUsersAndDecideAdmin();
 
   if (isAdmin) {
@@ -802,30 +832,63 @@ function deriveBoxStates(movements) {
 }
 
 
+async function loadMovementCacheOnce() {
+  if (movementCache.loaded) return;
+
+  const rows = await readTableRows("Movements");
+
+  const movements = rows.map(r => r.values[0]).map(arr => ({
+    timestamp: arr[0],
+    event_type: arr[1],
+    user_email: arr[2],
+    barcode: arr[3],
+    barcode_norm: norm(arr[4] || arr[3]),
+    invoice: arr[5],
+    invoice_norm: norm(arr[6]),
+    message: arr[7]
+  }));
+
+  movementCache.movements = movements;
+  movementCache.boxState = buildBoxState(movements);
+
+  movementCache.loaded = true; // ← THIS WAS NEVER HAPPENING
+}
+
+
 
 async function handleBatchSubmit() {
 
   // 1️⃣ Block double-clicks / spam
   if (isSubmitting) return;
   lockSubmissionUI();
+  stopScanner();
 
 
   try {
 
-    // 2️⃣ Read movements ONCE
-    const movementsRows = await readTableRows("Movements");
-    const movements = movementsRows.map(r => r.values[0]).map(arr => ({
-      timestamp: arr[0],
-      event_type: arr[1],
-      user_email: arr[2],
-      barcode: arr[3],
-      barcode_norm: norm(arr[4] || arr[3]),
-      invoice: arr[5],
-      invoice_norm: norm(arr[6]),
-      message: arr[7]
-    }));
+    // // 2️⃣ Read movements ONCE
+    // const movementsRows = await readTableRows("Movements");
+    // const movements = movementsRows.map(r => r.values[0]).map(arr => ({
+    //   timestamp: arr[0],
+    //   event_type: arr[1],
+    //   user_email: arr[2],
+    //   barcode: arr[3],
+    //   barcode_norm: norm(arr[4] || arr[3]),
+    //   invoice: arr[5],
+    //   invoice_norm: norm(arr[6]),
+    //   message: arr[7]
+    // }));
 
-    const boxState = buildBoxState(movements);
+    // const boxState = buildBoxState(movements);
+
+    if (!movementCache.loaded) {
+      alert("Data still loading. Please wait 2 seconds and retry.");
+      return;
+    }
+
+    const movements = movementCache.movements;
+    const boxState = movementCache.boxState;
+
 
     const rowsToWrite = [];   // 👈 KEY CHANGE
     const logs = [];
@@ -935,7 +998,40 @@ async function handleBatchSubmit() {
     // 3️⃣ WRITE ONCE (this fixes last-row-only bug)
     if (rowsToWrite.length > 0) {
       await addMovementRowsBulk(rowsToWrite);
+
+      // 🔥 UPDATE CACHE IMMEDIATELY AFTER SUCCESSFUL WRITE
+      for (const r of rowsToWrite) {
+        const m = {
+          timestamp: r[0],
+          event_type: r[1],
+          user_email: r[2],
+          barcode: r[3],
+          barcode_norm: r[4],
+          invoice: r[5],
+          invoice_norm: r[6],
+          message: r[7]
+        };
+
+        movementCache.movements.push(m);
+
+        if (!movementCache.boxState[m.barcode_norm]) {
+          movementCache.boxState[m.barcode_norm] = {
+            status: "unknown",
+            discarded: false
+          };
+        }
+
+        const s = movementCache.boxState[m.barcode_norm];
+
+        if (m.event_type === "DISCARD") {
+          s.status = "discarded";
+          s.discarded = true;
+        } else if (!s.discarded) {
+          s.status = m.event_type === "OUT" ? "customer" : "factory";
+        }
+      }
     }
+
 
     renderResultLogs(logs);
 
@@ -949,6 +1045,7 @@ async function handleBatchSubmit() {
     alert("Error processing batch: " + e.message);
     console.error(e);
   } finally {
+    startScanner();
     unlockSubmissionUI();
   }
 }
