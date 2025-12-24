@@ -185,6 +185,7 @@ const MSAL_CONFIG = {
   cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false }
 };
 const msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
+let authReady = false;
 const GRAPH_SCOPES = ["openid","profile","User.Read","Files.ReadWrite.All","Sites.ReadWrite.All","offline_access"];
 
 let account = null;
@@ -207,22 +208,11 @@ let appState = { mode:null, invoice:"", scanned:[], codeReader:null, streamActiv
 
 /* ---------- Helpers ---------- */
 function norm(s){ return (s||"").toString().trim().toUpperCase(); }
-// async function getToken(){
-//   const active = msalInstance.getAllAccounts()[0];
-//   if(!active) throw new Error("not-signed-in");
-//   try {
-//     const silent = await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: active });
-//     return silent.accessToken;
-//   } catch(e){
-//     const result = await msalInstance.acquireTokenPopup({ scopes: GRAPH_SCOPES });
-//     return result.accessToken;
-//   }
-// }
+
 async function getToken() {
+  if (!authReady) throw new Error("Auth not ready");
   const account = msalInstance.getActiveAccount();
-  if (!account) {
-    throw new Error("No active session. Please sign in again.");
-  }
+  if (!account) throw new Error("Not signed in");
 
   const result = await msalInstance.acquireTokenSilent({
     scopes: GRAPH_SCOPES,
@@ -231,6 +221,8 @@ async function getToken() {
 
   return result.accessToken;
 }
+
+
 
 async function graphFetch(path, method="GET", body=null) {
   const token = await getToken();
@@ -245,22 +237,76 @@ async function graphFetch(path, method="GET", body=null) {
   return res.json();
 }
 
-function nowISTExcel() {
-  const d = new Date();
+function nowExcelLocal() {
+  const d = new Date(); // already IST in your case
 
-  // Convert UTC → IST (+5:30)
-  const ist = new Date(d.getTime() + (5.5 * 60 * 60 * 1000));
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
 
-  const yyyy = ist.getFullYear();
-  const mm = String(ist.getMonth() + 1).padStart(2, "0");
-  const dd = String(ist.getDate()).padStart(2, "0");
-  const hh = String(ist.getHours()).padStart(2, "0");
-  const mi = String(ist.getMinutes()).padStart(2, "0");
-  const ss = String(ist.getSeconds()).padStart(2, "0");
-
-  // Excel-friendly datetime string
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 }
+
+function formatForDisplay(ts) {
+  if (ts === null || ts === undefined) return "-";
+
+  let d = null;
+
+  try {
+    // Excel serial number
+    if (typeof ts === "number") {
+      d = new Date((ts - 25569) * 86400 * 1000);
+    }
+
+    // Date object
+    else if (ts instanceof Date) {
+      d = new Date(ts.getTime());
+    }
+
+    // String
+    else if (typeof ts === "string") {
+      if (ts.includes("T")) {
+        d = new Date(ts);
+      } else if (ts.includes(" ")) {
+        d = new Date(ts.replace(" ", "T"));
+      } else {
+        d = new Date(ts);
+      }
+    }
+  } catch {
+    return "-";
+  }
+
+  if (!d || isNaN(d.getTime())) return "-";
+
+  // 🔥 FIX: subtract 5 hours 30 minutes (IST offset)
+  d = new Date(d.getTime() - (5.5 * 60 * 60 * 1000));
+
+  return d.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    // second: "2-digit",
+    hour12: true
+  });
+}
+
+
+
+
+
+function showLoggedOutState() {
+  userEmailEl.textContent = "";
+  btnLogin.style.display = "inline-block";
+  btnLogout.style.display = "none";
+  adminCard.style.display = "none";
+}
+
 
 
 /* ---------- Workbook helpers ----------
@@ -308,45 +354,89 @@ async function addMovementRowsBulk(rows) {
 
 
 /* ---------- auth & init ---------- */
-async function checkLogin(){
+async function startApp() {
+  initUI(); // SAFE: UI only
+
   const accounts = msalInstance.getAllAccounts();
-  if(accounts.length===0){
+  if (accounts.length === 0) {
+    showLoggedOutState();
+    return;
+  }
+
+  msalInstance.setActiveAccount(accounts[0]);
+  await postLoginInit();
+}
+
+
+
+async function postLoginInit() {
+  const accounts = msalInstance.getAllAccounts();
+  if (accounts.length === 0) {
+    // not logged in yet
     userEmailEl.textContent = "";
     btnLogin.style.display = "inline-block";
     btnLogout.style.display = "none";
+    initUI(); // UI without data
     return;
   }
+
+  msalInstance.setActiveAccount(accounts[0]);
+
   account = accounts[0];
-  userEmail = account.username || account.email || account.homeAccountId;
+  userEmail = account.username;
   userEmailEl.textContent = userEmail;
+
   btnLogin.style.display = "none";
   btnLogout.style.display = "inline-block";
-  // load workbook meta and check admin
-  await loadWorkbookMeta().catch(e=>console.error("wb",e));
+
+  initUI();                 // UI first
+  await loadWorkbookMeta(); // then data
   await loadUsersAndDecideAdmin();
+
   if (isAdmin) {
-  renderAdminDashboard();
-}
-
-}
-
-
-msalInstance.handleRedirectPromise().then(async (resp) => {
-  if (resp && resp.account) {
-    msalInstance.setActiveAccount(resp.account);
+    renderAdminDashboard();
   }
+}
 
-  await checkLogin();
-  initUI();
-}).catch(console.error);
+async function postLoginInit() {
+  const account = msalInstance.getActiveAccount();
+  if (!account) return;
+
+  userEmail = account.username;
+  userEmailEl.textContent = userEmail;
+
+  btnLogin.style.display = "none";
+  btnLogout.style.display = "inline-block";
+
+  await loadWorkbookMeta();
+  await loadUsersAndDecideAdmin();
+
+  if (isAdmin) {
+    renderAdminDashboard();
+  }
+}
+
+
+
+msalInstance.handleRedirectPromise()
+  .then((resp) => {
+    if (resp && resp.account) {
+      msalInstance.setActiveAccount(resp.account);
+    }
+    authReady = true;
+    startApp();   // 👈 single controlled entry point
+  })
+  .catch(console.error);
 
 
 btnLogin.onclick = () => {
   msalInstance.loginRedirect({ scopes: GRAPH_SCOPES });
 };
+
 btnLogout.onclick = () => {
   msalInstance.logoutRedirect();
 };
+
 
 
 /* ---------- users table / admin check ---------- */
@@ -454,7 +544,7 @@ async function renderAdminDashboard() {
                   <td>${b.status || "-"}</td>
                   <td>${b.last_invoice || "-"}</td>
                   <td>${b.times_used}</td>
-                  <td>${b.last_moved_at || "-"}</td>
+                  <td>${formatForDisplay(b.last_moved_at)}</td>
                 </tr>
               `).join("")}
             </tbody>
@@ -475,7 +565,7 @@ async function renderAdminDashboard() {
             <tbody>
               ${movements.slice(-25).reverse().map(m => `
                 <tr>
-                  <td>${m.timestamp}</td>
+                  <td>${formatForDisplay(m.timestamp)}</td>
                   <td>${m.event_type}</td>
                   <td>${m.user}</td>
                   <td>${m.barcode}</td>
@@ -493,23 +583,15 @@ async function renderAdminDashboard() {
     }
 
 
+function initUI() {
+  document.getElementById("modeIN").onclick = () => selectMode("IN");
+  document.getElementById("modeOUT").onclick = () => selectMode("OUT");
+  document.getElementById("modeDIS").onclick = () => selectMode("DISCARD");
 
-function initUI(){
-  // mode selectors
-  document.getElementById("modeIN").onclick = ()=> selectMode("IN");
-  document.getElementById("modeOUT").onclick = ()=> selectMode("OUT");
-  document.getElementById("modeDIS").onclick = ()=> selectMode("DISCARD");
-  // admin buttons
   btnExportCSV.onclick = exportMovementsCSV;
-  btnReloadTables.onclick = async ()=> {
-  await renderAdminDashboard();
-  };
-  // if already logged in, set UI
-  checkLogin();
-  if (isAdmin) {
-  renderAdminDashboard();
-  }
+  btnReloadTables.onclick = renderAdminDashboard;
 }
+
 
 function selectMode(m){
   appState.mode = m;
@@ -569,7 +651,7 @@ function renderScannerArea(){
     <details style="margin-top:10px">
       <summary style="cursor:pointer;font-weight:600">CLICK HERE TO DO MANUAL ENTRY</summary>
       <div style="display:flex;gap:8px;margin-top:10px">
-        <input id="manualCode" class="input" placeholder="Type barcode here & press "ADD" " />
+        <input id="manualCode" class="input" placeholder="Type barcode here & press 'ADD' " />
         <button id="addManual" class="btn secondary">ADD</button>
       </div>
     </details>
@@ -721,173 +803,6 @@ function deriveBoxStates(movements) {
 
 
 
-
-// async function handleBatchSubmit() {
-//   if (isSubmitting) return;
-//   lockSubmissionUI();
-
-//   try {
-//     const movementsRows = await readTableRows("Movements");
-//     const movements = movementsRows.map(r => r.values[0]).map(arr => ({
-//       timestamp: arr[0],
-//       event_type: arr[1],
-//       user_email: arr[2],
-//       barcode: arr[3],
-//       barcode_norm: norm(arr[4] || arr[3]),
-//       invoice: arr[5],
-//       invoice_norm: norm(arr[6]),
-//       message: arr[7]
-//     }));
-
-//     const boxState = buildBoxState(movements);
-//     const logs = [];
-//     const seen = new Set();
-
-//     function nowISTExcel() {
-//     const d = new Date();
-//     // Convert UTC → IST
-//     const ist = new Date(d.getTime() + (5.5 * 60 * 60 * 1000));
-
-//     const yyyy = ist.getFullYear();
-//     const mm = String(ist.getMonth() + 1).padStart(2, "0");
-//     const dd = String(ist.getDate()).padStart(2, "0");
-//     const hh = String(ist.getHours()).padStart(2, "0");
-//     const mi = String(ist.getMinutes()).padStart(2, "0");
-//     const ss = String(ist.getSeconds()).padStart(2, "0");
-
-//     // Excel-friendly datetime
-//     return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
-//   }
-
-
-//     for (const raw of appState.scanned) {
-//       const b = norm(raw);
-//       if (seen.has(b)) {
-//         logs.push({ barcode: raw, ok: false, message: "Duplicate in same batch" });
-//         continue;
-//       }
-//       seen.add(b);
-
-//       const state = boxState[b] || { status: "never_used", discarded: false };
-
-//       // ---------- OUT ----------
-//       if (appState.mode === "OUT") {
-//         const invNorm = norm(appState.invoice);
-
-//         if (state.discarded) {
-//           logs.push({ barcode: raw, ok: false, message: "Box discarded permanently" });
-//           continue;
-//         }
-//         if (state.status === "customer") {
-//           logs.push({ barcode: raw, ok: false, message: "Box already with customer" });
-//           continue;
-//         }
-//         const lastInv = lastInvoiceForBox(movements, b);
-//         if (lastInv === invNorm) {
-//           logs.push({ barcode: raw, ok: false, message: "Same box already sent on this invoice" });
-//           continue;
-//         }
-
-//         await addTableRow("Movements", [
-//           nowISTExcel(),
-//           "OUT",
-//           userEmail,
-//           raw,
-//           b,
-//           appState.invoice,
-//           invNorm,
-//           "Sent OUT"
-//         ]);
-//         logs.push({ barcode: raw, ok: true, message: "Sent OUT" });
-//       }
-
-//       // ---------- IN ----------
-//       if (appState.mode === "IN") {
-
-//         if (!state) {
-//           logs.push({
-//             barcode: raw,
-//             ok: false,
-//             message: "Box not found in system"
-//           });
-//           continue;
-//         }
-
-//         if (state.status === "discarded") {
-//           logs.push({
-//             barcode: raw,
-//             ok: false,
-//             message: "Box is discarded and cannot be moved"
-//           });
-//           continue;
-//         }
-
-//         if (state.status !== "customer") {
-//           logs.push({
-//             barcode: raw,
-//             ok: false,
-//             message: "Box is not with customer"
-//           });
-//           continue;
-//         }
-
-//         // ✅ valid IN
-//         await addTableRow("Movements", [
-//           nowISTExcel(),
-//           "IN",
-//           userEmail,
-//           raw,
-//           b,
-//           "",
-//           "",
-//           "Returned IN"
-//         ]);
-
-//         logs.push({
-//           barcode: raw,
-//           ok: true,
-//           message: "Returned IN"
-//         });
-//       }
-
-
-
-//       // ---------- DISCARD ----------
-//       if (appState.mode === "DISCARD") {
-//         if (state.discarded) {
-//           logs.push({ barcode: raw, ok: false, message: "Already discarded" });
-//           continue;
-//         }
-//         if (state.status !== "factory") {
-//           logs.push({ barcode: raw, ok: false, message: "Must be in factory to discard" });
-//           continue;
-//         }
-//         await addTableRow("Movements", [
-//           nowISTExcel(),
-//           "DISCARD",
-//           userEmail,
-//           raw,
-//           b,
-//           "",
-//           "",
-//           "Discarded"
-//         ]);
-//         logs.push({ barcode: raw, ok: true, message: "Discarded" });
-//       }
-//     }
-
-//     renderResultLogs(logs);
-//     if (logs.some(l => l.ok)) {
-//       appState.scanned = [];
-//       updateScannedUI();
-//     }
-//   } catch (e) {
-//     alert("Error processing batch: " + e.message);
-//     console.error(e);
-//   }
-// }
-
-
 async function handleBatchSubmit() {
 
   // 1️⃣ Block double-clicks / spam
@@ -949,7 +864,7 @@ async function handleBatchSubmit() {
         }
 
         rowsToWrite.push([
-          nowISTExcel(),
+          nowExcelLocal(),
           "OUT",
           userEmail,
           raw,
@@ -976,7 +891,7 @@ async function handleBatchSubmit() {
         }
 
         rowsToWrite.push([
-          nowISTExcel(),
+          nowExcelLocal(),
           "IN",
           userEmail,
           raw,
@@ -1003,7 +918,7 @@ async function handleBatchSubmit() {
         }
 
         rowsToWrite.push([
-          nowISTExcel(),
+          nowExcelLocal(),
           "DISCARD",
           userEmail,
           raw,
@@ -1067,13 +982,7 @@ async function exportMovementsCSV(){
 }
 
 /* ---------- boot ---------- */
-window.addEventListener("load", async ()=>{
-  initUI();
-  // If signed-in through redirect, MSAL will have account; handle that
-  // msalInstance.handleRedirectPromise().then(async (resp)=>{
-  //   if(resp) { await checkLogin(); initUI(); }
-  // }).catch(console.error);
-});
+
   </script>
 </body>
 </html>
