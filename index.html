@@ -393,21 +393,6 @@ async function loadWorkbookMeta(){
   return info;
 }
 
-
-// async function readTableRows(tableName){
-//   const r = await graphFetch(
-//     `${WORKBOOK_PATH}/workbook/tables('${encodeURIComponent(tableName)}')/rows`
-//   );
-//   return r.value || [];
-// }
-
-// async function readMovementsRange() {
-//   const res = await graphFetch(
-//     `${WORKBOOK_PATH}/workbook/worksheets('Movements')/range(address='A2:H100000')`
-//   );
-//   return res.values || [];
-// }
-
 async function readUsersRange() {
   const res = await graphFetch(
     `${WORKBOOK_PATH}/workbook/worksheets('Users')/range(address='A2:B1000')`
@@ -475,38 +460,6 @@ async function startApp() {
   await postLoginInit();
 }
 
-
-
-// async function postLoginInit() {
-//   const accounts = msalInstance.getAllAccounts();
-//   if (accounts.length === 0) {
-//     // not logged in yet
-//     userEmailEl.textContent = "";
-//     btnLogin.style.display = "inline-block";
-//     btnLogout.style.display = "none";
-//     initUI(); // UI without data
-//     return;
-//   }
-
-//   msalInstance.setActiveAccount(accounts[0]);
-
-//   account = accounts[0];
-//   userEmail = account.username;
-//   userEmailEl.textContent = userEmail;
-
-//   btnLogin.style.display = "none";
-//   btnLogout.style.display = "inline-block";
-
-//   initUI();                 // UI first
-//   await loadWorkbookMeta(); // then data
-//   await loadUsersAndDecideAdmin();
-//   await preloadMovements();
-
-//   if (isAdmin) {
-//     renderAdminDashboard();
-//   }
-// }
-
 async function postLoginInit() {
   const account = msalInstance.getActiveAccount();
   if (!account) return;
@@ -526,7 +479,6 @@ async function postLoginInit() {
     renderAdminDashboard();
   }
 }
-
 
 
 msalInstance.handleRedirectPromise()
@@ -655,7 +607,7 @@ async function renderAdminDashboard() {
             <tbody>
               ${boxes.slice(0, 50).map(b => `
                 <tr>
-                  <td>${b.barcode}</td>
+                  <td>${b.barcode_norm}</td>
                   <td>${b.status || "-"}</td>
                   <td>${b.last_invoice || "-"}</td>
                   <td>${b.times_used}</td>
@@ -691,8 +643,8 @@ async function renderAdminDashboard() {
                   <td>${formatForDisplay(m.timestamp)}</td>
                   <td>${m.event_type}</td>
                   <td>${m.user}</td>
-                  <td>${m.barcode}</td>
-                  <td>${m.invoice || "-"}</td>
+                  <td>${m.barcode_norm}</td>
+                  <td>${m.invoice_norm || "-"}</td>
                   <td>${m.message || ""}</td>
                 </tr>
               `).join("")}
@@ -909,7 +861,7 @@ function deriveBoxStates(movements) {
 
     if (m.event_type === "OUT") {
       map[b].status = "customer";
-      map[b].last_invoice = m.invoice;
+      map[b].last_invoice = m.invoice_norm;
       map[b].times_used += 1;
     }
 
