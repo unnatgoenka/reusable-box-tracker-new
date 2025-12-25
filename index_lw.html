@@ -57,6 +57,15 @@
     }
     table{ width:100%; border-collapse:collapse; font-size:14px; margin-top:12px }
     th,td{ padding:8px; border-bottom:1px solid #f0f2f7; text-align:left }
+        /* === Admin table mobile overflow fix === */
+    .table-wrap {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .table-wrap table {
+      min-width: 700px;
+    }
     .badge { background:var(--primary); color:#fff; padding:6px 8px; border-radius:999px; font-weight:600 }
     .admin-panel{ margin-top:16px; display:flex; gap:10px; align-items:center; justify-content:space-between }
     .user-chip{ padding:6px 10px; border-radius:10px; background:#bfcfff; color:var(--primary); font-weight:600 }
@@ -178,8 +187,6 @@ const MSAL_CONFIG = {
   auth: {
     clientId: CLIENT_ID,
     authority: `https://login.microsoftonline.com/${TENANT_ID}`,
-    // redirectUri: window.location.origin
-    // redirectUri: window.location.origin + "/reusable-box-tracker-new/"
     redirectUri: rdu
   },
   cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false }
@@ -215,6 +222,15 @@ const btnReloadTables = document.getElementById("btnReloadTables");
 let appState = { mode:null, invoice:"", scanned:[], codeReader:null, streamActive:false, workbookMeta:null, tablesMeta:null };
 
 /* ---------- Helpers ---------- */
+
+function cleanMovementRows(rows) {
+  return rows.filter(r =>
+    r &&
+    r.length &&
+    r.some(c => c !== null && c !== "")
+  );
+}
+
 function norm(s){ return (s||"").toString().trim().toUpperCase(); }
 
 async function getToken() {
@@ -231,7 +247,6 @@ async function getToken() {
 }
 
 
-
 async function graphFetch(path, method="GET", body=null) {
   const token = await getToken();
   const res = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
@@ -244,6 +259,30 @@ async function graphFetch(path, method="GET", body=null) {
   }
   return res.json();
 }
+
+
+async function appendRowsToMovementsRange(rows) {
+  if (rows.length === 0) return;
+
+  // 1️⃣ Get used range row count
+  const used = await graphFetch(
+    `${WORKBOOK_PATH}/workbook/worksheets('Movements')/usedRange?$select=rowCount`
+  );
+
+  const startRow = used.rowCount + 1; // Excel is 1-indexed
+  const endRow = startRow + rows.length - 1;
+
+  // A–H = 8 columns
+  const address = `A${startRow}:H${endRow}`;
+
+  // 2️⃣ Write values directly to range
+  await graphFetch(
+    `${WORKBOOK_PATH}/workbook/worksheets('Movements')/range(address='${address}')`,
+    "PATCH",
+    { values: rows }
+  );
+}
+
 
 function nowExcelLocal() {
   const d = new Date(); // already IST in your case
@@ -313,7 +352,6 @@ function showLoggedOutState() {
 }
 
 async function preloadMovements() {
-  const rows = await readTableRows("Movements");
 
   movementCache.movements = rows.map(r => {
     const a = r.values[0];
@@ -355,28 +393,56 @@ async function loadWorkbookMeta(){
   return info;
 }
 
-
-async function readTableRows(tableName){
-  const r = await graphFetch(
-    `${WORKBOOK_PATH}/workbook/tables('${encodeURIComponent(tableName)}')/rows`
+async function readUsersRange() {
+  const res = await graphFetch(
+    `${WORKBOOK_PATH}/workbook/worksheets('Users')/range(address='A2:B1000')`
   );
-  return r.value || [];
-}
-async function addTableRow(tableName, valuesArray){
-  // Graph expects body: { "values": [ [c1, c2, ...] ] }
-  const body = { values: [ valuesArray ] };
-  const res = await graphFetch(`${WORKBOOK_PATH}/workbook/tables('${encodeURIComponent(tableName)}')/rows/add`, "POST", body);
-  return res;
+  return res.values || [];
 }
 
-async function addMovementRowsBulk(rows) {
-  const body = { values: rows };
+async function getLastMovementRow() {
+  const res = await graphFetch(
+    `${WORKBOOK_PATH}/workbook/worksheets('Movements')/range(address='K1')`
+  );
+  return Number(res.values?.[0]?.[0] || 1);
+}
+
+async function setLastMovementRow(n) {
   await graphFetch(
-    `${WORKBOOK_PATH}/workbook/tables('Movements')/rows/add`,
-    "POST",
-    body
+    `${WORKBOOK_PATH}/workbook/worksheets('Movements')/range(address='K1')`,
+    "PATCH",
+    { values: [[n]] }
   );
 }
+
+async function readMovementsDynamic() {
+  const lastRow = await getLastMovementRow();
+  if (lastRow < 2) return [];
+
+  const res = await graphFetch(
+    `${WORKBOOK_PATH}/workbook/worksheets('Movements')/range(address='A2:H${lastRow}')`
+  );
+  return res.values || [];
+}
+
+async function appendMovementRowsWithCursor(rowsToWrite) {
+  if (!rowsToWrite || rowsToWrite.length === 0) return;
+
+  // 1. Read cursor
+  const startRow = (await getLastMovementRow()) + 1;
+  const endRow = startRow + rowsToWrite.length - 1;
+
+  // 2. Write rows
+  await graphFetch(
+    `${WORKBOOK_PATH}/workbook/worksheets('Movements')/range(address='A${startRow}:H${endRow}')`,
+    "PATCH",
+    { values: rowsToWrite }
+  );
+
+  // 3. Update cursor
+  await setLastMovementRow(endRow);
+}
+
 
 
 
@@ -392,38 +458,6 @@ async function startApp() {
 
   msalInstance.setActiveAccount(accounts[0]);
   await postLoginInit();
-}
-
-
-
-async function postLoginInit() {
-  const accounts = msalInstance.getAllAccounts();
-  if (accounts.length === 0) {
-    // not logged in yet
-    userEmailEl.textContent = "";
-    btnLogin.style.display = "inline-block";
-    btnLogout.style.display = "none";
-    initUI(); // UI without data
-    return;
-  }
-
-  msalInstance.setActiveAccount(accounts[0]);
-
-  account = accounts[0];
-  userEmail = account.username;
-  userEmailEl.textContent = userEmail;
-
-  btnLogin.style.display = "none";
-  btnLogout.style.display = "inline-block";
-
-  initUI();                 // UI first
-  await loadWorkbookMeta(); // then data
-  await loadUsersAndDecideAdmin();
-  await preloadMovements();
-
-  if (isAdmin) {
-    renderAdminDashboard();
-  }
 }
 
 async function postLoginInit() {
@@ -445,7 +479,6 @@ async function postLoginInit() {
     renderAdminDashboard();
   }
 }
-
 
 
 msalInstance.handleRedirectPromise()
@@ -472,14 +505,13 @@ btnLogout.onclick = () => {
 /* ---------- users table / admin check ---------- */
 async function loadUsersAndDecideAdmin(){
   try{
-    const rows = await readTableRows("Users");
+    const rows = await readUsersRange();
     // assume first row is header; Graph rows have .values array
     // convert to list of objects
-    const map = rows.map(r => r.values[0]); // each values is [[col1,col2,..]]
+    const map = rows;
     const users = map.map(arr => ({ email: arr[0], role: (arr[1]||"").toLowerCase() }));
     const me = users.find(u => norm(u.email) === norm(userEmail));
     isAdmin = !!(me && me.role === "admin");
-    // roleArea.innerHTML = `<div class="user-chip">${isAdmin ? "Admin" : "User"}</div>`;
     document.getElementById("rolePill").innerHTML = isAdmin ? `<span class="user-chip">Admin</span>` : "";
     if(isAdmin) adminCard.style.display = "block"; else adminCard.style.display = "none";
   }catch(e){
@@ -528,8 +560,10 @@ async function renderAdminDashboard() {
       adminArea.innerHTML = "Loading…";
 
       try {
-        const rows = await readTableRows("Movements");
-        const movements = rows.map(r => r.values[0]).map(arr => ({
+        const rows = await readMovementsDynamic();
+        const cleaned = cleanMovementRows(rows);
+
+        const movements = cleaned.map(arr => ({
           timestamp: arr[0],
           event_type: arr[1],
           user: arr[2],
@@ -540,9 +574,11 @@ async function renderAdminDashboard() {
           message: arr[7]
         }));
 
+
         const boxes = deriveBoxStates(movements);
 
         const total = boxes.length;
+        // const total = movementCache.movements.length;
         const withCustomer = boxes.filter(b => b.status === "customer").length;
         const factory = boxes.filter(b => b.status === "factory").length;
         const discarded = boxes.filter(b => b.status === "discarded").length;
@@ -557,6 +593,7 @@ async function renderAdminDashboard() {
           </div>
 
           <h4 style="margin-top:18px">Current Box State</h4>
+          <div class="table-wrap">
           <table>
             <thead>
               <tr>
@@ -568,9 +605,9 @@ async function renderAdminDashboard() {
               </tr>
             </thead>
             <tbody>
-              ${boxes.map(b => `
+              ${boxes.slice(0, 50).map(b => `
                 <tr>
-                  <td>${b.barcode}</td>
+                  <td>${b.barcode_norm}</td>
                   <td>${b.status || "-"}</td>
                   <td>${b.last_invoice || "-"}</td>
                   <td>${b.times_used}</td>
@@ -579,8 +616,16 @@ async function renderAdminDashboard() {
               `).join("")}
             </tbody>
           </table>
+          </div>
+
+          ${boxes.length > 50 
+            ? `<div class="small muted" style="margin-top:6px">
+                 Showing first 50 boxes
+               </div>` 
+            : ""}
 
           <h4 style="margin-top:18px">Recent Activity</h4>
+          <div class="table-wrap">
           <table>
             <thead>
               <tr>
@@ -598,13 +643,14 @@ async function renderAdminDashboard() {
                   <td>${formatForDisplay(m.timestamp)}</td>
                   <td>${m.event_type}</td>
                   <td>${m.user}</td>
-                  <td>${m.barcode}</td>
-                  <td>${m.invoice || "-"}</td>
+                  <td>${m.barcode_norm}</td>
+                  <td>${m.invoice_norm || "-"}</td>
                   <td>${m.message || ""}</td>
                 </tr>
               `).join("")}
             </tbody>
           </table>
+          </div>
         `;
       } catch (e) {
         adminArea.innerHTML = `<div class="muted">Failed to load admin data</div>`;
@@ -815,7 +861,7 @@ function deriveBoxStates(movements) {
 
     if (m.event_type === "OUT") {
       map[b].status = "customer";
-      map[b].last_invoice = m.invoice;
+      map[b].last_invoice = m.invoice_norm;
       map[b].times_used += 1;
     }
 
@@ -835,9 +881,11 @@ function deriveBoxStates(movements) {
 async function loadMovementCacheOnce() {
   if (movementCache.loaded) return;
 
-  const rows = await readTableRows("Movements");
+  const rows = await readMovementsDynamic();
+  const cleaned = cleanMovementRows(rows);
 
-  const movements = rows.map(r => r.values[0]).map(arr => ({
+
+  movementCache.movements = cleaned.map(arr => ({
     timestamp: arr[0],
     event_type: arr[1],
     user_email: arr[2],
@@ -848,10 +896,8 @@ async function loadMovementCacheOnce() {
     message: arr[7]
   }));
 
-  movementCache.movements = movements;
-  movementCache.boxState = buildBoxState(movements);
-
-  movementCache.loaded = true; // ← THIS WAS NEVER HAPPENING
+  movementCache.boxState = buildBoxState(movementCache.movements);
+  movementCache.loaded = true;
 }
 
 
@@ -865,21 +911,6 @@ async function handleBatchSubmit() {
 
 
   try {
-
-    // // 2️⃣ Read movements ONCE
-    // const movementsRows = await readTableRows("Movements");
-    // const movements = movementsRows.map(r => r.values[0]).map(arr => ({
-    //   timestamp: arr[0],
-    //   event_type: arr[1],
-    //   user_email: arr[2],
-    //   barcode: arr[3],
-    //   barcode_norm: norm(arr[4] || arr[3]),
-    //   invoice: arr[5],
-    //   invoice_norm: norm(arr[6]),
-    //   message: arr[7]
-    // }));
-
-    // const boxState = buildBoxState(movements);
 
     if (!movementCache.loaded) {
       alert("Data still loading. Please wait 2 seconds and retry.");
@@ -995,11 +1026,11 @@ async function handleBatchSubmit() {
       }
     }
 
-    // 3️⃣ WRITE ONCE (this fixes last-row-only bug)
-    if (rowsToWrite.length > 0) {
-      await addMovementRowsBulk(rowsToWrite);
 
-      // 🔥 UPDATE CACHE IMMEDIATELY AFTER SUCCESSFUL WRITE
+    if (rowsToWrite.length > 0) {
+      await appendMovementRowsWithCursor(rowsToWrite);
+
+      // 🔥 UPDATE CACHE AFTER SUCCESSFUL WRITE
       for (const r of rowsToWrite) {
         const m = {
           timestamp: r[0],
@@ -1031,6 +1062,7 @@ async function handleBatchSubmit() {
         }
       }
     }
+
 
 
     renderResultLogs(logs);
@@ -1068,8 +1100,8 @@ function renderResultLogs(logs){
 /* ---------- Admin functions ---------- */
 async function exportMovementsCSV(){
   try{
-    const rows = await readTableRows("Movements");
-    const values = rows.map(r=>r.values[0]);
+    const rows = await readMovementsDynamic();
+    const values = rows;
     const csv = [ ["timestamp","event_type","user_email","barcode","barcode_norm","invoice","invoice_norm","message"], ...values ].map(r=> r.map(c=> `"${String(c||"").replace(/"/g,'""')}"`).join(",") ).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
