@@ -402,7 +402,7 @@ async function readUsersRange() {
 
 async function getLastMovementRow() {
   const res = await graphFetch(
-    `${WORKBOOK_PATH}/workbook/worksheets('Movements')/range(address='K1')`
+    `${WORKBOOK_PATH}/workbook/worksheets('Movements')/range(address='J1')`
   );
   return Number(res.values?.[0]?.[0] || 1);
 }
