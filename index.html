@@ -100,7 +100,7 @@
       <div id="adminArea" style="margin-top:12px"></div>
     </section>
 
-    <div class="footer">Built to replace messy spreadsheets. Scans are written to your SharePoint list (single source of truth).</div>
+    <div class="footer">Built to scan reusable boxes. Data is sent to SharePoint list & Excel.</div>
   </main>
 
   <!-- libs -->
@@ -627,7 +627,30 @@ async function renderAdminDashboard(){
         <div class="card"><strong>Total Movements</strong><div>${movements.length}</div></div>
       </div>
 
-      <h4 style="margin-top:18px">Current Box State</h4>
+      <h4 style="margin-top:18px;margin-bottom:-15px">Recent Activity</h4>
+      <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th><th>Event</th><th>User</th><th>Barcode</th><th>Invoice</th><th>Message</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${movements.slice(-25).reverse().map(m => `
+            <tr>
+              <td>${formatForDisplay(m.timestamp)}</td>
+              <td>${m.event_type}</td>
+              <td>${m.user_email}</td>
+              <td>${m.barcode_norm}</td>
+              <td>${m.invoice_norm || "-"}</td>
+              <td>${m.message || ""}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+      </div>
+
+      <h4 style="margin-top:30px;margin-bottom:-15px">Current Box State</h4>
       <div class="table-wrap">
       <table>
         <thead>
@@ -655,28 +678,6 @@ async function renderAdminDashboard(){
 
       ${boxes.length > 50 ? `<div class="small muted" style="margin-top:6px">Showing first 25 boxes</div>` : ""}
 
-      <h4 style="margin-top:18px">Recent Activity</h4>
-      <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Time</th><th>Event</th><th>User</th><th>Barcode</th><th>Invoice</th><th>Message</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${movements.slice(-25).reverse().map(m => `
-            <tr>
-              <td>${formatForDisplay(m.timestamp)}</td>
-              <td>${m.event_type}</td>
-              <td>${m.user_email}</td>
-              <td>${m.barcode_norm}</td>
-              <td>${m.invoice_norm || "-"}</td>
-              <td>${m.message || ""}</td>
-            </tr>
-          `).join("")}
-        </tbody>
-      </table>
-      </div>
     `;
   }catch(e){
     adminArea.innerHTML = `<div class="muted">Failed to load admin data</div>`;
