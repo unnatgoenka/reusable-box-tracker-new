@@ -89,10 +89,10 @@
       <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
         <div style="min-width:250px">
           <h3 style="margin:0">Admin</h3>
-          <div class="small">User management, exports</div>
+          <div class="small">Recent Activity</div>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
-          <button id="btnExportCSV" class="btn">Export Movements CSV</button>
+          <button id="btnExportCSV" class="btn">Export Movements CSV (last 200)</button>
           <button id="btnReloadTables" class="btn secondary">Reload Data</button>
         </div>
       </div>
@@ -137,8 +137,6 @@ const GRAPH_SCOPES = ["openid","profile","User.Read","Sites.ReadWrite.All","offl
 let userEmail = "";
 let isAdmin = false;
 let isSubmitting = false;
-
-const movementCache = { loaded:false, movements:[], boxState:{} };
 
 const btnLogin = document.getElementById("btnLogin");
 const btnLogout = document.getElementById("btnLogout");
@@ -195,19 +193,6 @@ async function graphFetch(path, method="GET", body=null){
 }
 
 /* New: SharePoint list helpers */
-
-async function readListItemsAll(){
-  const out = [];
-  let url = `/sites/${ENC_SITE}/lists/${ENC_LIST}/items?$expand=fields&$top=500`;
-  while(url){
-    const resp = await graphFetch(url);
-    if (resp.value && resp.value.length) {
-      out.push(...resp.value);
-    }
-    url = resp['@odata.nextLink'] ? resp['@odata.nextLink'].replace('https://graph.microsoft.com/v1.0','') : null;
-  }
-  return out;
-}
 
 async function readUsersFromExcel() {
   const res = await graphFetch(
@@ -270,31 +255,6 @@ function formatForDisplay(ts){
   return d.toLocaleString("en-IN", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit", hour12:true });
 }
 
-/* Movement cache load from SharePoint */
-async function loadMovementCacheOnce(){
-  if (movementCache.loaded) return;
-
-  const items = await readListItemsAll();
-
-  movementCache.movements = items.map(i => {
-    const f = i.fields || {};
-
-    return {
-      timestamp: f.Created || f.Title,
-      event_type: f.field_1 || "",
-      user_email: f.user_email || "",
-      barcode: f.field_3 || "",
-      barcode_norm: norm(f.field_4 || f.field_3 || ""),
-      invoice: f.field_5 || "",
-      invoice_norm: norm(f.field_6 || ""),
-      message: f.field_7 || ""
-    };
-  });
-
-  movementCache.boxState = buildBoxState(movementCache.movements);
-  movementCache.loaded = true;
-}
-
 /* Auth & init */
 async function startApp(){
   initUI();
@@ -311,10 +271,11 @@ async function postLoginInit(){
   userEmailEl.textContent = userEmail;
   btnLogin.style.display = "none";
   btnLogout.style.display = "inline-block";
-  // load cache from SharePoint list
-  await loadMovementCacheOnce();
+
+  // do NOT preload entire movements at login (will not scale).
+  // Only load Users (from Excel) to decide admin, then show lightweight admin.
   await loadUsersAndDecideAdmin();
-  if (isAdmin) renderAdminDashboard();
+  if (isAdmin) await renderAdminDashboard();
 }
 
 msalInstance.handleRedirectPromise().then((resp) => {
@@ -326,27 +287,6 @@ msalInstance.handleRedirectPromise().then((resp) => {
 btnLogin.onclick = () => msalInstance.loginRedirect({ scopes: GRAPH_SCOPES });
 btnLogout.onclick = () => msalInstance.logoutRedirect();
 
-/* Users: try to read Users list; if missing, fallback to non-admin */
-// async function loadUsersAndDecideAdmin(){
-//   try{
-//     // try find a list named "Users"
-//     const lists = await graphFetch(`/sites/${SITE_ID}/lists?$filter=displayName eq 'Users'&$select=id,displayName`);
-//     let users = [];
-//     if (lists && lists.value && lists.value.length > 0){
-//       const usersListId = lists.value[0].id;
-//       const rows = await graphFetch(`/sites/${SITE_ID}/lists/${usersListId}/items?$expand=fields&$top=500`);
-//       const vals = rows.value || [];
-//       users = vals.map(v => ({ email: (v.fields?.email || v.fields?.user_email || v.fields?.UserEmail || "").toString(), role: (v.fields?.role || v.fields?.roleName || "").toString().toLowerCase() }));
-//     }
-//     const me = users.find(u => norm(u.email) === norm(userEmail));
-//     isAdmin = !!(me && me.role === "admin");
-//     document.getElementById("rolePill").innerHTML = isAdmin ? `<span class="user-chip">Admin</span>` : "";
-//     adminCard.style.display = isAdmin ? "block" : "none";
-//   }catch(e){
-//     console.warn("users list read failed:", e);
-//     isAdmin = false; adminCard.style.display = "none";
-//   }
-// }
 async function loadUsersAndDecideAdmin() {
   try {
     const rows = await readUsersFromExcel();
@@ -371,6 +311,7 @@ async function loadUsersAndDecideAdmin() {
 }
 
 
+
 /* UI */
 function showLoggedOutState(){ userEmailEl.textContent = ""; btnLogin.style.display = "inline-block"; btnLogout.style.display = "none"; adminCard.style.display = "none"; }
 function initUI(){
@@ -378,7 +319,10 @@ function initUI(){
   document.getElementById("modeOUT").onclick = () => selectMode("OUT");
   document.getElementById("modeDIS").onclick = () => selectMode("DISCARD");
   btnExportCSV.onclick = exportMovementsCSV;
-  btnReloadTables.onclick = async () => { movementCache.loaded = false; await loadMovementCacheOnce(); renderAdminDashboard(); };
+  btnReloadTables.onclick = async () => { 
+    // lightweight admin refresh
+    await renderAdminDashboard();
+  };
 }
 
 /* Scanner UI and logic - unchanged except final write uses list API */
@@ -465,129 +409,155 @@ function startScanner(){
 }
 function stopScanner(){ try{ if(appState.codeReader) { appState.codeReader.reset(); appState.codeReader=null; } }catch(e){} }
 
-/* Business rules & List writes */
-function buildBoxState(movements){
-  const state = {};
-  for(const m of movements){
-    const b = m.barcode_norm;
-    if(!b) continue;
-    if(!state[b]) state[b] = { status:"unknown", discarded:false };
-    if (m.event_type === "DISCARD"){ state[b].status = "discarded"; state[b].discarded = true; }
-    else if (!state[b].discarded) state[b].status = m.event_type === "OUT" ? "customer" : "factory";
-  }
-  return state;
-}
-function lastInvoiceForBox(movements, barcodeNorm){
-  const m = [...movements].reverse().find(x => x.barcode_norm === barcodeNorm && x.event_type === "OUT");
-  return m ? m.invoice_norm : null;
-}
-function deriveBoxStates(movements){
-  const map = {};
-  for (const m of movements){
-    const b = m.barcode_norm;
-    if (!map[b]) {
-      map[b] = { barcode: m.barcode, barcode_norm: b, status: null, last_invoice: "", times_used: 0, last_moved_at: null };
-    }
-    map[b].last_moved_at = m.timestamp;
-    if (m.event_type === "OUT"){ map[b].status = "customer"; map[b].last_invoice = m.invoice_norm; map[b].times_used += 1; }
-    if (m.event_type === "IN") map[b].status = "factory";
-    if (m.event_type === "DISCARD") map[b].status = "discarded";
-  }
-  return Object.values(map);
-}
 
-/* Main submit: validate via cache, then write each movement to SharePoint list */
+/* Main submit: validate via filtering, then write each movement to SharePoint list */
 async function handleBatchSubmit(){
   if (isSubmitting) return;
   lockSubmissionUI();
   stopScanner();
+
   try{
-    if (!movementCache.loaded) { 
-      await loadMovementCacheOnce();
-      alert("Data still loading. Please wait 2 seconds and retry."); 
-      return;
+    const scannedRaw = appState.scanned.slice(); // copy
+    if (scannedRaw.length === 0){ alert("No codes scanned"); return; }
+
+    // normalize barcodes and dedupe local batch
+    const barcodes = Array.from(new Set(scannedRaw.map(b => norm(b))));
+
+    // Split into batches of 50 to avoid URL length issues
+    const BATCH_SIZE = 50;
+    const batches = [];
+    for (let i = 0; i < barcodes.length; i += BATCH_SIZE) {
+      batches.push(barcodes.slice(i, i + BATCH_SIZE));
     }
-    const movements = movementCache.movements;
-    const boxState = movementCache.boxState;
+
+    // Fetch history only for scanned barcodes (batched)
+    let historyItems = [];
+    for (const batch of batches){
+      // build OData filter on the internal barcode field (field_4)
+      const filter = batch.map(b => `fields/field_4 eq '${b}'`).join(' or ');
+      const url = `/sites/${ENC_SITE}/lists/${ENC_LIST}/items?$expand=fields&$filter=${encodeURIComponent(filter)}&$top=1000`;
+      console.log(batch);
+      console.log(filter);
+      const resp = await graphFetch(url);
+      if (resp && resp.value) historyItems.push(...resp.value);
+    }
+
+    // Build latest state per barcode from fetched history
+    const latestByBarcode = {}; // barcode_norm -> {createdEpoch, event, invoice_norm}
+    for (const item of historyItems){
+      const f = item.fields || {};
+      const b = norm(f.field_4 || f.field_3 || "");
+      if (!b) continue;
+      const createdEpoch = new Date(item.createdDateTime || item.fields?.Created || item.fields?.Title || Date.now()).getTime();
+      // event value: if single choice stored as string, else if array take first
+      let eventVal = "";
+      if (Array.isArray(f.field_1)) eventVal = String(f.field_1[0] || "");
+      else eventVal = String(f.field_1 || "");
+      const invNorm = norm(f.field_6 || f.field_5 || "");
+      if (!latestByBarcode[b] || createdEpoch > latestByBarcode[b].createdEpoch){
+        latestByBarcode[b] = { createdEpoch, event: eventVal, invoice_norm: invNorm };
+      }
+    }
+
+    // Validation & prepare rows
     const rowsToWrite = [];
     const logs = [];
-    const seen = new Set();
-
-    for (const raw of appState.scanned){
+    for (const raw of barcodes){
       const b = norm(raw);
-      if (seen.has(b)){ logs.push({ barcode: raw, ok:false, message:"Duplicate in same batch" }); continue; }
-      seen.add(b);
-      const state = boxState[b] || { status:"never_used", discarded:false };
+      const state = latestByBarcode[b] || null;
 
+      // DUPLICATE-in-batch handled by dedupe earlier but keep guard
+      // Decide per mode:
       if (appState.mode === "OUT"){
         const invNorm = norm(appState.invoice);
-        if (state.discarded){ logs.push({ barcode: raw, ok:false, message:"Box discarded permanently" }); continue; }
-        if (state.status === "customer"){ logs.push({ barcode: raw, ok:false, message:"Box already with customer" }); continue; }
-        const lastInv = lastInvoiceForBox(movements, b);
-        if (lastInv === invNorm){ logs.push({ barcode: raw, ok:false, message:"Same box already sent on this invoice" }); continue; }
-        rowsToWrite.push([ nowExcelLocalISO(), "OUT", userEmail, raw, b, appState.invoice, invNorm, "Sent OUT" ]);
+        if (state && state.event === "DISCARD"){
+          logs.push({ barcode: raw, ok:false, message:"Box discarded permanently" }); continue;
+        }
+        if (state && state.event === "OUT" && state.invoice_norm === invNorm){
+          logs.push({ barcode: raw, ok:false, message:"Same box already sent on this invoice" }); continue;
+        }
+        if (state && state.event === "OUT"){
+          logs.push({ barcode: raw, ok:false, message:"Box already with customer" }); continue;
+        }
+        rowsToWrite.push({
+          timestamp: nowExcelLocalISO(),
+          event_type: "OUT",
+          user_email: userEmail,
+          barcode: raw,
+          barcode_norm: b,
+          invoice: appState.invoice || "",
+          invoice_norm: norm(appState.invoice || ""),
+          message: "Sent OUT"
+        });
         logs.push({ barcode: raw, ok:true, message:"Sent OUT" });
-      }
-
-      if (appState.mode === "IN"){
-        if (state.discarded){ logs.push({ barcode: raw, ok:false, message:"Box is discarded" }); continue; }
-        if (state.status !== "customer"){ logs.push({ barcode: raw, ok:false, message:"Box is not with customer" }); continue; }
-        rowsToWrite.push([ nowExcelLocalISO(), "IN", userEmail, raw, b, "", "", "Returned IN" ]);
+      } else if (appState.mode === "IN"){
+        if (!state || state.event !== "OUT"){
+          logs.push({ barcode: raw, ok:false, message:"Box is not with customer or already discarded" }); continue;
+        }
+        rowsToWrite.push({
+          timestamp: nowExcelLocalISO(),
+          event_type: "IN",
+          user_email: userEmail,
+          barcode: raw,
+          barcode_norm: b,
+          invoice: "",
+          invoice_norm: "",
+          message: "Returned IN"
+        });
         logs.push({ barcode: raw, ok:true, message:"Returned IN" });
-      }
-
-      if (appState.mode === "DISCARD"){
-        if (state.discarded){ logs.push({ barcode: raw, ok:false, message:"Already discarded" }); continue; }
-        if (state.status !== "factory"){ logs.push({ barcode: raw, ok:false, message:"Must be in factory to discard" }); continue; }
-        rowsToWrite.push([ nowExcelLocalISO(), "DISCARD", userEmail, raw, b, "", "", "Discarded" ]);
+      } else if (appState.mode === "DISCARD"){
+        if (state && state.event === "DISCARD"){
+          logs.push({ barcode: raw, ok:false, message:"Already discarded" }); continue;
+        }
+        if (state && state.event === "OUT"){
+          logs.push({ barcode: raw, ok:false, message:"Box must be in Factory to Discard" }); continue;
+        }
+        if (!state || state.event !== "IN"){
+          logs.push({ barcode: raw, ok:false, message:"Box does not exist" }); continue;
+        }
+        rowsToWrite.push({
+          timestamp: nowExcelLocalISO(),
+          event_type: "DISCARD",
+          user_email: userEmail,
+          barcode: raw,
+          barcode_norm: b,
+          invoice: "",
+          invoice_norm: "",
+          message: "Discarded"
+        });
         logs.push({ barcode: raw, ok:true, message:"Discarded" });
+      } else {
+        logs.push({ barcode: raw, ok:false, message:"Unknown mode" });
       }
     }
 
-    if (rowsToWrite.length > 0){
-      // write one-by-one (stable). If needed, we can batch but safer to keep single writes.
-      for (const r of rowsToWrite) {
-        const fieldsPayload = {
-          timestamp: r[0],
-          event_type: r[1],
-          user_email: r[2],   
-          barcode: r[3],
-          barcode_norm: r[4],
-          invoice: r[5],
-          invoice_norm: r[6],
-          message: r[7]
-        }
-        await addMovementToList(fieldsPayload);
-        // update local cache
-        const m = {
-          timestamp: fieldsPayload.timestamp,
-          event_type: fieldsPayload.event_type,
-          user_email: fieldsPayload.user_email,
-          barcode: fieldsPayload.barcode,
-          barcode_norm: fieldsPayload.barcode_norm,
-          invoice: fieldsPayload.invoice,
-          invoice_norm: fieldsPayload.invoice_norm,
-          message: fieldsPayload.message
-        };
-
-        movementCache.movements.push(m);
-        if (!movementCache.boxState[m.barcode_norm]) movementCache.boxState[m.barcode_norm] = { status:"unknown", discarded:false };
-        const s = movementCache.boxState[m.barcode_norm];
-        if (m.event_type === "DISCARD"){ s.status = "discarded"; s.discarded = true; }
-        else if (!s.discarded) s.status = m.event_type === "OUT" ? "customer" : "factory";
-      }
+    // Write to SharePoint list (single writes for reliability)
+    for (const p of rowsToWrite){
+      await addMovementToList({
+        event_type: p.event_type,
+        user_email: p.user_email,
+        barcode: p.barcode,
+        barcode_norm: p.barcode_norm,
+        invoice: p.invoice,
+        invoice_norm: p.invoice_norm,
+        message: p.message
+      });
     }
 
     renderResultLogs(logs);
+    // clear only successful ones from scanned:
     if (logs.some(l => l.ok)){ appState.scanned = []; updateScannedUI(); }
+
   }catch(e){
-    alert("Error processing batch: " + e.message);
+    alert("Error processing batch: " + (e.message || e));
     console.error(e);
   }finally{
     startScanner();
     unlockSubmissionUI();
   }
 }
+
+
 
 /* UI helpers */
 function lockSubmissionUI(){ isSubmitting = true; const done = document.getElementById("btnDone"); const remove = document.getElementById("btnRemove"); const reset = document.getElementById("btnReset"); const overlay = document.getElementById("submitOverlay"); if (done) done.disabled = true; if (remove) remove.disabled = true; if (reset) reset.disabled = true; if (overlay) overlay.style.display = "block"; }
@@ -606,32 +576,47 @@ function renderResultLogs(logs){
   el.appendChild(tbl);
 }
 
-/* Admin rendering now uses movementCache (which is filled from list) */
+/* Admin rendering now uses filtered data (which is filled from list) */
 async function renderAdminDashboard(){
   if (!isAdmin) return;
   adminArea.innerHTML = "Loading…";
   try{
-    // ensure cache is fresh
-    movementCache.loaded = false;
-    await loadMovementCacheOnce();
-    const movements = movementCache.movements;
-    const boxes = deriveBoxStates(movements);
-    const total = boxes.length;
-    // console.log(boxes.slice(-50,))
-    // console.log(movements)
-    const withCustomer = boxes.filter(b => b.status === "customer").length;
-    const factory = boxes.filter(b => b.status === "factory").length;
-    const discarded = boxes.filter(b => b.status === "discarded").length;
-    adminArea.innerHTML = `
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
-        <div class="card"><strong>Total Boxes</strong><div>${total}</div></div>
-        <div class="card"><strong>With Customer</strong><div>${withCustomer}</div></div>
-        <div class="card"><strong>In Factory</strong><div>${factory}</div></div>
-        <div class="card"><strong>Discarded</strong><div>${discarded}</div></div>
-        <div class="card"><strong>Total Movements</strong><div>${movements.length}</div></div>
-      </div>
+    // Fetch latest 50 movements only (lightweight)
+    const resp = await graphFetch(`/sites/${ENC_SITE}/lists/${ENC_LIST}/items?$orderby=fields/Created desc&$top=50&$expand=fields`);
 
-      <h4 style="margin-top:18px;margin-bottom:-15px">Recent Activity</h4>
+    const movements = (resp.value || []).map(i => {
+      const f = i.fields || {};
+      return {
+        timestamp: i.createdDateTime || f.Created || f.Title,
+        event_type: Array.isArray(f.field_1) ? (f.field_1[0] || "") : (f.field_1 || ""),
+        user_email: f.user_email || "",
+        barcode_norm: norm(f.field_4 || f.field_3 || ""),
+        invoice_norm: norm(f.field_6 || f.field_5 || ""),
+        message: f.field_7 || ""
+      };
+    });
+    console.log(movements);
+
+    // Derive a small box-state preview from these recent movements
+    const boxesMap = {};
+    for (const m of movements.slice()){
+      const b = m.barcode_norm;
+      if (!b) continue;
+      if (!boxesMap[b]){
+        boxesMap[b] = { barcode: b, status: m.event_type === "OUT" ? "customer" : (m.event_type === "IN" ? "factory" : (m.event_type === "DISCARD" ? "discarded" : "unknown")), last_invoice: m.invoice_norm, last_moved_at: m.timestamp, times_used: 0 };
+      }
+      if (m.event_type === "OUT") boxesMap[b].times_used += 1;
+    }
+    const boxes = Object.values(boxesMap);
+
+    adminArea.innerHTML = `
+    <!--
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
+        <div class="card"><strong>Recent Movements (count)</strong><div>${movements.length}</div></div>
+        <div class="card"><strong>Unique Boxes (preview)</strong><div>${boxes.length}</div></div>
+      </div>  -->
+
+      <h4 style="margin-top:18px;margin-bottom:-15px">Recent Movements (50)</h4>
       <div class="table-wrap">
       <table>
         <thead>
@@ -640,7 +625,7 @@ async function renderAdminDashboard(){
           </tr>
         </thead>
         <tbody>
-          ${movements.slice(-25).reverse().map(m => `
+          ${movements.map(m => `
             <tr>
               <td>${formatForDisplay(m.timestamp)}</td>
               <td>${m.event_type}</td>
@@ -654,23 +639,15 @@ async function renderAdminDashboard(){
       </table>
       </div>
 
-      <h4 style="margin-top:30px;margin-bottom:-15px">Current Box State</h4>
+      <h4 style="margin-top:30px;margin-bottom:-15px">Box State (from recent)</h4>
       <div class="table-wrap">
       <table>
-        <thead>
-          <tr>
-            <th>Barcode</th>
-            <th>Status</th>
-            <th>Last Invoice</th>
-            <th>Times Used</th>
-            <th>Last Movement</th>
-          </tr>
-        </thead>
+        <thead><tr><th>Barcode</th><th>Status</th><th>Last Invoice</th><th>Times Used</th><th>Last Movement</th></tr></thead>
         <tbody>
           ${boxes.slice(0,25).map(b => `
             <tr>
-              <td>${b.barcode_norm}</td>
-              <td>${b.status || "-"}</td>
+              <td>${b.barcode}</td>
+              <td>${b.status}</td>
               <td>${b.last_invoice || "-"}</td>
               <td>${b.times_used}</td>
               <td>${formatForDisplay(b.last_moved_at)}</td>
@@ -679,9 +656,6 @@ async function renderAdminDashboard(){
         </tbody>
       </table>
       </div>
-
-      ${boxes.length > 50 ? `<div class="small muted" style="margin-top:6px">Showing first 25 boxes</div>` : ""}
-
     `;
   }catch(e){
     adminArea.innerHTML = `<div class="muted">Failed to load admin data</div>`;
@@ -689,21 +663,74 @@ async function renderAdminDashboard(){
   }
 }
 
+
 /* Export from SharePoint list */
 async function exportMovementsCSV(){
   try{
-    const items = await readListItemsAll();
-    const values = items.map(i => {
-      const f = i.fields || {};
-      return [f.timestamp, f.event_type, f.user_email, f.barcode, f.barcode_norm, f.invoice, f.invoice_norm, f.message];
+    // Calculate 7 days ago in ISO
+    const now = new Date();
+    const past = new Date();
+    past.setDate(now.getDate() - 7);
+    const pastISO = past.toISOString();
+    console.log(pastISO);
+
+    const url =
+      `/sites/${ENC_SITE}/lists/${ENC_LIST}/items` +
+      `?$filter=fields/Created ge '${pastISO}'` +
+      `&$orderby=fields/Created desc` +
+      `&$expand=fields` +
+      `&$top=5000`;
+
+    // const resp = await graphFetch(url);
+    const resp = await graphFetch(
+      url,
+      "GET",
+      null,
+      {
+        "ConsistencyLevel": "eventual"
+      }
+    );
+
+    const rows = (resp.value || []).map(item=>{
+      const f = item.fields || {};
+      return [
+        item.createdDateTime || "",
+        Array.isArray(f.field_1) ? (f.field_1[0]||"") : (f.field_1||""),
+        f.user_email || "",
+        f.field_3 || "",
+        f.field_4 || "",
+        f.field_5 || "",
+        f.field_6 || "",
+        f.field_7 || ""
+      ];
     });
-    const csv = [ ["timestamp","event_type","user_email","barcode","barcode_norm","invoice","invoice_norm","message"], ...values ]
-      .map(r=> r.map(c=> `"${String(c||"").replace(/"/g,'""')}"`).join(",") ).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href=url; a.download="movements.csv"; a.click();
-    URL.revokeObjectURL(url);
-  }catch(e){ alert("Export failed: "+e.message); }
+
+    const header = [
+      "Created",
+      "Event",
+      "User",
+      "Barcode",
+      "Barcode Norm",
+      "Invoice",
+      "Invoice Norm",
+      "Message"
+    ];
+
+    const csvContent =
+      [header, ...rows]
+        .map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(","))
+        .join("\n");
+
+    const blob = new Blob([csvContent], {type:"text/csv;charset=utf-8;"});
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "movements_last_7_days.csv";
+    link.click();
+
+  }catch(e){
+    alert("Export failed: " + e.message);
+    console.error(e);
+  }
 }
 
 /* boot */
